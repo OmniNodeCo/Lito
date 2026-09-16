@@ -446,9 +446,34 @@ class Brain:
         # "confirm uninstall X" already stripped by pattern sometimes
         raw = re.sub(r"^\s*confirm\s+", "", raw, flags=re.I).strip()
         raw = re.sub(r"^(the\s+app\s+|app\s+)", "", raw, flags=re.I).strip()
+        low = f"{text} {raw}".lower()
+        clear_cache = None
+        if re.search(
+            r"\b(and\s+(?:its\s+|the\s+)?caches?|with\s+caches?|"
+            r"plus\s+caches?|delete\s+caches?|clear\s+caches?|"
+            r"remove\s+caches?|including\s+caches?)\b",
+            low,
+        ):
+            clear_cache = True
+        # Strip cache phrase from the app name capture
+        raw = re.sub(
+            r"\s+(and\s+(?:its\s+|the\s+)?caches?|with\s+caches?|"
+            r"plus\s+caches?|delete\s+caches?|clear\s+caches?|"
+            r"remove\s+caches?|including\s+caches?)\s*$",
+            "",
+            raw,
+            flags=re.I,
+        ).strip()
         if not raw:
-            return Reply("Name an app to uninstall, e.g. `uninstall firefox`.", ok=False, kind="help")
-        ok, msg = actions.uninstall_app_text(raw, confirm=confirm)
+            return Reply(
+                "Name an app to uninstall, e.g. `uninstall firefox` "
+                "or `uninstall firefox and cache`.",
+                ok=False,
+                kind="help",
+            )
+        ok, msg = actions.uninstall_app_text(
+            raw, confirm=confirm, clear_cache=clear_cache
+        )
         return Reply(msg, ok=ok, kind="action")
 
     def _do_refresh_apps(self, text: str, m: re.Match) -> Reply:

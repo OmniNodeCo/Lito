@@ -707,8 +707,47 @@ def plan_uninstall(name: str) -> tuple[UninstallPlan | None, str]:
     )
 
 
-def uninstall_app(name: str, *, confirm: bool = False) -> tuple[bool, str]:
-    """Plan or execute uninstall. confirm=False -> dry description only."""
+def _clear_owner_cache(app_name: str) -> str:
+    """Best-effort: clear this app's user caches after uninstall (never blocks)."""
+    try:
+        from . import cache as cache_mod
+    except Exception as exc:
+        return f"(cache clean skipped: {exc})"
+    try:
+        # After uninstall the app is not running; include_recent so leftovers go too.
+        result = cache_mod.clear_caches(
+            owner=app_name,
+            unused_only=True,
+            include_recent=True,
+            include_system=False,
+            dry_run=False,
+            idle_days=0,
+        )
+        if result.cleared:
+            lines = [result.summary()]
+            lines.extend(result.lines[:12])
+            if len(result.lines) > 12:
+                lines.append(f"...(+{len(result.lines) - 12} more)")
+            return "\n".join(lines)
+        return result.summary() + " (no matching user caches found)"
+    except Exception as exc:
+        return f"(cache clean failed: {exc})"
+
+
+def uninstall_app(
+    name: str,
+    *,
+    confirm: bool = False,
+    clear_cache: bool | None = None,
+) -> tuple[bool, str]:
+    """Plan or execute uninstall. confirm=False -> dry description only.
+
+    clear_cache:
+      True  - also delete this app's user caches after a successful uninstall
+      False - leave caches alone
+      None  - default False, but the plan message offers the option
+    Env: LITO_UNINSTALL_CLEAR_CACHE=1 forces clear_cache on confirm.
+    """
     plan, err = plan_uninstall(name)
     if err:
         return False, err
@@ -717,11 +756,30 @@ def uninstall_app(name: str, *, confirm: bool = False) -> tuple[bool, str]:
     if plan.method == "unknown" or not plan.command:
         return False, plan.summary()
 
+    env_clear = os.environ.get("LITO_UNINSTALL_CLEAR_CACHE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if clear_cache is None:
+        want_cache = env_clear
+    else:
+        want_cache = bool(clear_cache) or env_clear
+
     auto = os.environ.get("LITO_UNINSTALL_YES", "").strip() in {"1", "true", "yes"}
     if not confirm and not auto:
+        cache_line = (
+            f"- cache: will **also clear** **{plan.app.name}** user caches after uninstall"
+            if want_cache
+            else (
+                f"- cache: left in place (add **`and cache`** or say "
+                f"**`confirm uninstall {plan.app.name} and cache`** to delete caches too)"
+            )
+        )
         return True, (
-            f"Ready to uninstall:\n{plan.summary()}\n\n"
-            f"Say **`confirm uninstall {plan.app.name}`** to proceed "
+            f"Ready to uninstall:\n{plan.summary()}\n{cache_line}\n\n"
+            f"Say **`confirm uninstall {plan.app.name}`** to proceed, or "
+            f"**`confirm uninstall {plan.app.name} and cache`** to also wipe its caches "
             f"(or set `LITO_UNINSTALL_YES=1`)."
         )
 
@@ -743,10 +801,18 @@ def uninstall_app(name: str, *, confirm: bool = False) -> tuple[bool, str]:
                     f"Opened Windows Apps & Features for **{plan.app.name}**.\n"
                     f"{plan.detail}\n```\n{msg}\n```"
                 )
-            return True, (
+            body = (
                 f"Uninstalled **{plan.app.name}** via `{plan.method}`.\n"
                 f"```\n{msg}\n```"
             )
+            if want_cache:
+                body += "\n\n**App cache cleanup**\n" + _clear_owner_cache(plan.app.name)
+            elif clear_cache is not False:
+                body += (
+                    f"\n\nCaches kept. Say `clear cache for {plan.app.name}` "
+                    f"if you want them gone."
+                )
+            return True, body
         return False, (
             f"Uninstall of **{plan.app.name}** failed (`{plan.method}`).\n"
             f"Command: `{plan.command}`\n```\n{msg}\n```\n"
@@ -760,7 +826,15 @@ def uninstall_app(name: str, *, confirm: bool = False) -> tuple[bool, str]:
             registry.reload()
         except Exception:
             pass
-        return True, f"Uninstalled **{plan.app.name}** via `{plan.method}`.\n```\n{msg}\n```"
+        body = f"Uninstalled **{plan.app.name}** via `{plan.method}`.\n```\n{msg}\n```"
+        if want_cache:
+            body += "\n\n**App cache cleanup**\n" + _clear_owner_cache(plan.app.name)
+        elif clear_cache is not False:
+            body += (
+                f"\n\nCaches kept. Say `clear cache for {plan.app.name}` "
+                f"if you want them gone."
+            )
+        return True, body
     return False, (
         f"Uninstall of **{plan.app.name}** failed (`{plan.method}`).\n"
         f"Command: `{plan.command}`\n```\n{msg}\n```\n"

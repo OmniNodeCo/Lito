@@ -246,5 +246,65 @@ Kleopatra helper       Foo.Bar         1.0
         self.assertIn("Successfully uninstalled", msg)
 
 
+
+
+class UninstallCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LITO_DATA"] = self.tmp.name
+        os.environ["LITO_NO_DESKTOP_SCAN"] = "1"
+        from lito.brain import Brain
+
+        self.brain = Brain()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_plan_mentions_cache_option(self) -> None:
+        with mock.patch(
+            "lito.actions.uninstall_app_text",
+            return_value=(True, "Ready to uninstall:\n- cache: left in place"),
+        ) as m:
+            r = self.brain.handle("uninstall demoapp")
+        self.assertTrue(r.ok)
+        kwargs = m.call_args.kwargs
+        self.assertFalse(kwargs.get("confirm"))
+        # clear_cache not forced on plain uninstall
+        self.assertIn(kwargs.get("clear_cache"), (None, False))
+
+    def test_uninstall_and_cache_intent(self) -> None:
+        with mock.patch(
+            "lito.actions.uninstall_app_text",
+            return_value=(True, "Ready + cache"),
+        ) as m:
+            r = self.brain.handle("uninstall demoapp and cache")
+        self.assertTrue(r.ok)
+        args, kwargs = m.call_args
+        self.assertEqual(args[0], "demoapp")
+        self.assertTrue(kwargs.get("clear_cache"))
+
+    def test_confirm_and_cache_intent(self) -> None:
+        with mock.patch(
+            "lito.actions.uninstall_app_text",
+            return_value=(True, "done"),
+        ) as m:
+            r = self.brain.handle("confirm uninstall demoapp and cache")
+        self.assertTrue(r.ok)
+        self.assertTrue(m.call_args.kwargs.get("confirm"))
+        self.assertTrue(m.call_args.kwargs.get("clear_cache"))
+        self.assertEqual(m.call_args.args[0], "demoapp")
+
+    def test_clear_owner_cache_helper(self) -> None:
+        from lito import uninstall as u
+        from lito.cache import CleanResult
+
+        fake = CleanResult(scanned=2, cleared=1, freed_bytes=100)
+        fake.lines = ["cleared - **Demo** - 100 B - `/tmp/x`"]
+        with mock.patch("lito.cache.clear_caches", return_value=fake):
+            msg = u._clear_owner_cache("Demo")
+        self.assertIn("cleared", msg.lower())
+
+
+
 if __name__ == "__main__":
     unittest.main()

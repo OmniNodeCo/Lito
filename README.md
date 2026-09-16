@@ -59,6 +59,7 @@ On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO
 | `list apps by recent` / `by launches` | Sort by activity |
 | `when was firefox last used` | Last-used detail for one app |
 | `uninstall firefox` → `confirm uninstall firefox` | Safe uninstall (flatpak/snap/apt/brew/winget/registry) |
+| `uninstall firefox and cache` | Uninstall **and** delete that app’s user caches |
 | (Windows) suite apps | Resolves winget **Id** + registry; Kleopatra → Gpg4win |
 | `search web …` / `look up …` / `what is …` | Smart internet search (answers + links in chat) |
 | `list apps firefox` | Filter the inventory |

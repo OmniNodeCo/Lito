@@ -531,10 +531,17 @@ def app_last_used_text(name: str = "") -> str:
     )
 
 
-def uninstall_app_text(name: str, *, confirm: bool = False) -> tuple[bool, str]:
+def uninstall_app_text(
+    name: str,
+    *,
+    confirm: bool = False,
+    clear_cache: bool | None = None,
+) -> tuple[bool, str]:
     from . import uninstall as uninstall_mod
 
-    return uninstall_mod.uninstall_app(name, confirm=confirm)
+    return uninstall_mod.uninstall_app(
+        name, confirm=confirm, clear_cache=clear_cache
+    )
 
 
 def smart_web_search(query: str, *, open_browser: bool = False) -> tuple[bool, str]:
@@ -685,6 +692,7 @@ def help_text() -> str:
 - `list apps by recent` / `list apps by launches` - sort by activity
 - `when was firefox last used` / `recently used apps`
 - `uninstall firefox` then `confirm uninstall firefox`
+- `uninstall firefox and cache` / `confirm uninstall firefox and cache` - also wipe its caches
 - `list apps firefox` / `find app terminal` - filter
 - `refresh apps` - rescan .desktop / Applications / Start Menu
 - `find file report.pdf`
