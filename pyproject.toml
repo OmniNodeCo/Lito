@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lito"
-version = "0.1.4"
+version = "0.1.5"
 description = "Lightweight desktop AI assistant — open apps, do tasks, tiny RAM"
 readme = "README.md"
 requires-python = ">=3.9"

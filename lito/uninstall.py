@@ -3,6 +3,15 @@
 Resolves the app via the registry, detects package manager / source, then
 runs the matching uninstall path. Requires confirm=True for actual removal
 unless LITO_UNINSTALL_YES=1 (for automation).
+
+Windows notes
+-------------
+`winget uninstall --name "Kleopatra"` often fails because Kleopatra is a
+component of **Gpg4win** (id `GnuPG.Gpg4win`), not a standalone winget name.
+We therefore:
+1. Resolve a winget **Id** via `winget list` / `winget search`
+2. Fall back to the Uninstall registry (MSI / Inno / NSIS strings)
+3. Last resort: open Windows Apps & Features
 """
 
 from __future__ import annotations
@@ -14,7 +23,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 from .apps import AppEntry, registry
 
@@ -22,7 +30,7 @@ from .apps import AppEntry, registry
 @dataclass
 class UninstallPlan:
     app: AppEntry
-    method: str  # flatpak | snap | apt | dnf | pacman | brew | macos | windows | unknown
+    method: str  # flatpak | snap | apt | dnf | pacman | brew | macos | winget | windows-registry | windows-settings | unknown
     command: str
     detail: str = ""
     risky: bool = False
@@ -36,20 +44,35 @@ class UninstallPlan:
         )
 
 
-def _run(cmd: list[str] | str, timeout: float = 120.0) -> tuple[bool, str]:
+def _run(cmd: list[str] | str, timeout: float = 180.0) -> tuple[bool, str]:
+    run_kw: dict = {"capture_output": True, "text": True, "timeout": timeout}
+    if platform.system() == "Windows":
+        cf = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if cf:
+            run_kw["creationflags"] = cf
     try:
         if isinstance(cmd, str):
-            proc = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=timeout
-            )
+            proc = subprocess.run(cmd, shell=True, **run_kw)
         else:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            proc = subprocess.run(cmd, **run_kw)
+    except TypeError:
+        run_kw.pop("creationflags", None)
+        try:
+            if isinstance(cmd, str):
+                proc = subprocess.run(cmd, shell=True, **run_kw)
+            else:
+                proc = subprocess.run(cmd, **run_kw)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, str(exc)
     except subprocess.TimeoutExpired:
         return False, f"Timed out after {timeout}s"
     except OSError as exc:
         return False, str(exc)
     out = ((proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")).strip()
-    return proc.returncode == 0, out[:3000] or f"(exit {proc.returncode})"
+    # winget prints progress with CR; normalize
+    out = re.sub(r"[^\S\n]*\r[^\S\n]*", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return proc.returncode == 0, out[:4000] or f"(exit {proc.returncode})"
 
 
 def _flatpak_id(app: AppEntry) -> str | None:
@@ -57,7 +80,6 @@ def _flatpak_id(app: AppEntry) -> str | None:
         return app.command.split("flatpak run ", 1)[1].strip().split()[0]
     if app.description and re.match(r"^[\w.-]+\.[\w.-]+", app.description):
         return app.description.split()[0]
-    # aliases may hold app id
     for a in app.aliases:
         if a.count(".") >= 2 and " " not in a:
             return a
@@ -82,11 +104,476 @@ def _apt_package_for_binary(binary: str) -> str | None:
         out = subprocess.check_output(
             ["dpkg", "-S", path], text=True, stderr=subprocess.DEVNULL, timeout=5
         )
-        # "pkg: /usr/bin/foo"
         pkg = out.split(":", 1)[0].strip()
         return pkg or None
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Windows helpers
+# ---------------------------------------------------------------------------
+
+# Well-known component → parent package (when winget name match fails)
+_WINDOWS_COMPONENT_HINTS: dict[str, tuple[str, ...]] = {
+    "kleopatra": ("gpg4win", "gnupg.gpg4win", "gnupg"),
+    "gpa": ("gpg4win", "gnupg.gpg4win"),
+    "kleopatra.exe": ("gpg4win",),
+    "gpgex": ("gpg4win",),
+    "wkdlookup": ("gpg4win",),
+}
+
+
+def _winget_available() -> bool:
+    return bool(shutil.which("winget"))
+
+
+def _parse_winget_table(raw: str) -> list[dict[str, str]]:
+    """Parse winget list/search text table into {name,id,version} rows."""
+    lines = [re.sub(r".*\r", "", ln).rstrip() for ln in (raw or "").splitlines()]
+    lines = [ln for ln in lines if ln.strip()]
+    header_i = -1
+    for i, ln in enumerate(lines):
+        low = ln.lower()
+        if "name" in low and re.search(r"\bid\b", low):
+            header_i = i
+            break
+    if header_i < 0:
+        return []
+    header = lines[header_i]
+    m_id = re.search(r"\bId\b", header, re.I)
+    m_ver = re.search(r"\bVersion\b", header, re.I)
+    if not m_id:
+        return []
+    id_pos = m_id.start()
+    ver_pos = m_ver.start() if m_ver else -1
+    rows: list[dict[str, str]] = []
+    for ln in lines[header_i + 1 :]:
+        if re.match(r"^-+$", ln.strip()) or set(ln.strip()) <= {"-"}:
+            continue
+        low = ln.lower()
+        if "no installed package" in low or "no package found" in low:
+            continue
+        if len(ln) <= id_pos:
+            continue
+        name = ln[:id_pos].strip()
+        if ver_pos > id_pos and len(ln) >= ver_pos:
+            pkg_id = ln[id_pos:ver_pos].strip()
+            version = ln[ver_pos:].strip().split()[0] if ln[ver_pos:].strip() else ""
+        else:
+            parts = ln[id_pos:].split()
+            pkg_id = parts[0] if parts else ""
+            version = parts[1] if len(parts) > 1 else ""
+        if name and pkg_id and not pkg_id.startswith("-"):
+            rows.append({"name": name, "id": pkg_id, "version": version})
+    return rows
+
+
+def _winget_list_matches(query: str) -> list[dict[str, str]]:
+    if not _winget_available() or not (query or "").strip():
+        return []
+    q = query.strip()
+    cmd = [
+        "winget",
+        "list",
+        "--query",
+        q,
+        "--disable-interactivity",
+        "--accept-source-agreements",
+    ]
+    ok, out = _run(cmd, timeout=60)
+    rows = _parse_winget_table(out)
+    if rows:
+        return rows
+    # Some winget builds return non-zero when 0 matches; still try search
+    return []
+
+
+def _winget_search_matches(query: str) -> list[dict[str, str]]:
+    if not _winget_available() or not (query or "").strip():
+        return []
+    cmd = [
+        "winget",
+        "search",
+        "--query",
+        query.strip(),
+        "--disable-interactivity",
+        "--accept-source-agreements",
+    ]
+    _ok, out = _run(cmd, timeout=60)
+    return _parse_winget_table(out)
+
+
+def _windows_registry_uninstallers(query: str) -> list[dict[str, str]]:
+    """Read Uninstall registry for DisplayName match -> UninstallString."""
+    if platform.system() != "Windows":
+        return []
+    try:
+        import winreg  # type: ignore
+    except ImportError:
+        return []
+
+    roots = [
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+        ),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    q = (query or "").strip().lower()
+    tokens = [t for t in re.split(r"\W+", q) if len(t) >= 3]
+    found: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for hive, sub in roots:
+        try:
+            key = winreg.OpenKey(hive, sub)
+        except OSError:
+            continue
+        try:
+            i = 0
+            while True:
+                try:
+                    sk_name = winreg.EnumKey(key, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    sk = winreg.OpenKey(key, sk_name)
+                except OSError:
+                    continue
+                try:
+
+                    def _val(name: str, _sk=sk) -> str:
+                        try:
+                            v, _ = winreg.QueryValueEx(_sk, name)
+                            return str(v)
+                        except OSError:
+                            return ""
+
+                    display = _val("DisplayName")
+                    uninst = _val("UninstallString")
+                    quiet = _val("QuietUninstallString")
+                    if not display or not (uninst or quiet):
+                        continue
+                    dlow = display.lower()
+                    if q and q not in dlow and not any(t in dlow for t in tokens):
+                        continue
+                    uid = f"{display}|{uninst}"
+                    if uid in seen:
+                        continue
+                    seen.add(uid)
+                    found.append(
+                        {
+                            "name": display,
+                            "uninstall": quiet or uninst,
+                            "quiet": quiet,
+                            "normal": uninst,
+                        }
+                    )
+                finally:
+                    try:
+                        winreg.CloseKey(sk)
+                    except OSError:
+                        pass
+        finally:
+            try:
+                winreg.CloseKey(key)
+            except OSError:
+                pass
+
+    def score(item: dict[str, str]) -> tuple:
+        n = item["name"].lower()
+        return (0 if n == q else 1, 0 if n.startswith(q) else 1, len(n))
+
+    found.sort(key=score)
+    return found
+
+
+def _path_hints(app: AppEntry) -> list[str]:
+    """Vendor / folder hints from the launch command path."""
+    hints: list[str] = []
+    cmd = app.command or ""
+    m = re.search(r'([A-Za-z]:\\[^"\']+)', cmd)
+    path = m.group(1) if m else cmd.strip().strip('"')
+    skip = {
+        "bin",
+        "app",
+        "application",
+        "applications",
+        "program files",
+        "program files (x86)",
+        "windows",
+        "system32",
+        "cmd",
+        "users",
+        "x86",
+    }
+    try:
+        parts = Path(path).parts
+    except Exception:
+        parts = ()
+    for part in parts:
+        pl = part.lower().strip("\\/")
+        if len(pl) < 3 or pl in skip:
+            continue
+        if pl.endswith(".exe"):
+            hints.append(Path(pl).stem)
+            continue
+        hints.append(part)
+    return hints
+
+
+def _candidate_queries(app: AppEntry) -> list[str]:
+    names: list[str] = []
+    bare = re.sub(r"\s*(\(.*\)|-\s*shortcut|\.lnk)$", "", app.name, flags=re.I).strip()
+    for n in (app.name, bare, *app.aliases):
+        n = (n or "").strip()
+        if n and n not in names:
+            names.append(n)
+    for h in _path_hints(app):
+        if h not in names:
+            names.append(h)
+    # Component → parent package hints (Kleopatra → Gpg4win)
+    extra: list[str] = []
+    for n in list(names):
+        key = n.lower()
+        for hint in _WINDOWS_COMPONENT_HINTS.get(key, ()):
+            if hint not in names and hint not in extra:
+                extra.append(hint)
+        # also stem of exe
+        if key.endswith(".exe"):
+            for hint in _WINDOWS_COMPONENT_HINTS.get(key[:-4], ()):
+                if hint not in names and hint not in extra:
+                    extra.append(hint)
+    names.extend(extra)
+    return names
+
+
+def _plan_windows_registry_only(app: AppEntry) -> UninstallPlan | None:
+    """Build a plan from the Windows Uninstall registry only."""
+    reg: list[dict[str, str]] = []
+    for q in _candidate_queries(app):
+        reg = _windows_registry_uninstallers(q)
+        if reg:
+            break
+    if not reg:
+        return None
+
+    best = reg[0]
+    un = best.get("quiet") or best["uninstall"]
+    msi = re.search(r"msiexec\.exe\s+(/[ix])\s*(\{[^}]+\}|[^\s]+)", un, re.I)
+    if msi:
+        command = f"msiexec /x {msi.group(2)} /qn /norestart"
+    elif best.get("quiet"):
+        command = best["quiet"]
+    else:
+        command = un
+        # Inno Setup silent
+        if re.search(r"unins(tall)?\d*\.exe", un, re.I) and "/SILENT" not in un.upper():
+            if not un.startswith('"') and " " in un:
+                command = f'"{un}" /SILENT'
+            else:
+                command = f"{un} /SILENT"
+        elif re.search(r"Uninstall\.exe", un, re.I) and "/S" not in un:
+            if not un.startswith('"') and " " in un:
+                command = f'"{un}" /S'
+            else:
+                command = f"{un} /S"
+
+    extras = ""
+    if len(reg) > 1:
+        extras = " · also matched: " + ", ".join(r["name"] for r in reg[1:4])
+    return UninstallPlan(
+        app=app,
+        method="windows-registry",
+        command=command,
+        detail=f"Registry uninstall for **{best['name']}**{extras}",
+        risky=True,
+    )
+
+
+def _pick_winget_row(rows: list[dict[str, str]], app: AppEntry) -> dict[str, str]:
+    q = app.name.lower()
+    queries = [x.lower() for x in _candidate_queries(app)]
+
+    def score(r: dict[str, str]) -> tuple:
+        nm = r["name"].lower()
+        iid = r["id"].lower()
+        exact = 0 if nm == q else 1
+        name_hit = 0 if any(x and x in nm for x in queries) else 1
+        id_hit = 0 if any(x and x in iid for x in queries) else 1
+        return (exact, name_hit, id_hit, len(nm))
+
+    return sorted(rows, key=score)[0]
+
+
+def _plan_windows(app: AppEntry) -> UninstallPlan:
+    """Best-effort Windows uninstall: winget id → registry → settings."""
+    winget_rows: list[dict[str, str]] = []
+    if _winget_available():
+        for q in _candidate_queries(app):
+            winget_rows = _winget_list_matches(q)
+            if winget_rows:
+                break
+        if not winget_rows:
+            for q in _candidate_queries(app):
+                winget_rows = _winget_search_matches(q)
+                # Prefer rows that look installed-ish; search may list available only
+                if winget_rows:
+                    break
+
+    if winget_rows:
+        best = _pick_winget_row(winget_rows, app)
+        pkg_id = best["id"]
+        extras = ""
+        if len(winget_rows) > 1:
+            extras = " · also: " + ", ".join(
+                f"{r['name']} (`{r['id']}`)" for r in winget_rows[1:4]
+            )
+        return UninstallPlan(
+            app=app,
+            method="winget",
+            command=(
+                f'winget uninstall --id "{pkg_id}" '
+                f"--exact --silent --disable-interactivity "
+                f"--accept-source-agreements"
+            ),
+            detail=(
+                f"winget package **{best['name']}** id `{pkg_id}`"
+                + (f" v{best['version']}" if best.get("version") else "")
+                + extras
+            ),
+            risky=True,
+        )
+
+    reg_plan = _plan_windows_registry_only(app)
+    if reg_plan is not None:
+        return reg_plan
+
+    return UninstallPlan(
+        app=app,
+        method="windows-settings",
+        command="start ms-settings:appsfeatures",
+        detail=(
+            f"Could not resolve a winget id or registry uninstaller for **{app.name}**. "
+            f"Opening Windows Apps & Features — search for the app there. "
+            f"Note: Kleopatra is often part of **Gpg4win** "
+            f"(`winget uninstall --id GnuPG.Gpg4win`)."
+        ),
+        risky=False,
+    )
+
+
+def _run_windows_uninstall(plan: UninstallPlan) -> tuple[bool, str]:
+    """Execute Windows uninstall with winget id/name/registry fallbacks."""
+    if plan.method == "windows-settings" or plan.command.startswith("start "):
+        ok, msg = _run(plan.command)
+        return ok, msg or "Opened Windows Apps & Features."
+
+    if plan.method == "windows-registry":
+        return _run(plan.command)
+
+    if plan.method != "winget":
+        return _run(plan.command)
+
+    # --- winget path with fallbacks ---
+    ok, msg = _run(plan.command)
+    low = (msg or "").lower()
+    if ok and "no installed package" not in low:
+        return True, msg
+
+    app_name = plan.app.name
+    m = re.search(r'--id\s+"([^"]+)"', plan.command)
+    pkg_id = m.group(1) if m else ""
+    attempts: list[list[str]] = []
+    if pkg_id:
+        attempts.append(
+            [
+                "winget",
+                "uninstall",
+                "--id",
+                pkg_id,
+                "--exact",
+                "--disable-interactivity",
+                "--accept-source-agreements",
+            ]
+        )
+        attempts.append(
+            [
+                "winget",
+                "uninstall",
+                "--id",
+                pkg_id,
+                "--exact",
+                "--force",
+                "--disable-interactivity",
+                "--accept-source-agreements",
+            ]
+        )
+    # Try every resolved list match
+    seen_ids = {pkg_id} if pkg_id else set()
+    for q in _candidate_queries(plan.app):
+        for row in _winget_list_matches(q):
+            aid = row["id"]
+            if aid in seen_ids:
+                continue
+            seen_ids.add(aid)
+            attempts.append(
+                [
+                    "winget",
+                    "uninstall",
+                    "--id",
+                    aid,
+                    "--exact",
+                    "--disable-interactivity",
+                    "--accept-source-agreements",
+                ]
+            )
+    attempts.append(
+        [
+            "winget",
+            "uninstall",
+            "--name",
+            app_name,
+            "--exact",
+            "--disable-interactivity",
+            "--accept-source-agreements",
+        ]
+    )
+
+    logs = [f"$ {plan.command}\n{msg}"]
+    for cmd in attempts:
+        ok2, msg2 = _run(cmd)
+        logs.append(f"$ {' '.join(cmd)}\n{msg2}")
+        if ok2 and "no installed package" not in (msg2 or "").lower():
+            return True, "\n\n".join(logs[-3:])
+
+    # Registry fallback
+    reg_plan = _plan_windows_registry_only(plan.app)
+    if reg_plan is not None:
+        ok3, msg3 = _run(reg_plan.command)
+        logs.append(f"$ {reg_plan.command}\n{msg3}")
+        if ok3:
+            return True, "\n\n".join(logs[-3:])
+
+    tip = (
+        "Could not uninstall via winget (no matching package id).\n\n"
+        + "\n\n".join(logs[-4:])
+        + "\n\n**Tips**\n"
+        + f"- Run `winget list {app_name}` and use the exact **Id**\n"
+        + "- Kleopatra is often inside **Gpg4win**: "
+        "`winget uninstall --id GnuPG.Gpg4win`\n"
+        "- Or uninstall from **Settings → Apps → Installed apps**\n"
+        "- Admin rights may be required"
+    )
+    return False, tip
+
+
+# ---------------------------------------------------------------------------
+# Planner
+# ---------------------------------------------------------------------------
 
 
 def plan_uninstall(name: str) -> tuple[UninstallPlan | None, str]:
@@ -148,7 +635,6 @@ def plan_uninstall(name: str) -> tuple[UninstallPlan | None, str]:
                     ),
                     "",
                 )
-        # Homebrew cask guess
         if shutil.which("brew"):
             cask = app.name.lower().replace(" ", "-")
             return (
@@ -164,31 +650,10 @@ def plan_uninstall(name: str) -> tuple[UninstallPlan | None, str]:
 
     # Windows
     if system == "Windows":
-        # Prefer winget if present
-        if shutil.which("winget"):
-            return (
-                UninstallPlan(
-                    app=app,
-                    method="winget",
-                    command=f'winget uninstall --name "{app.name}" --silent',
-                    detail="Windows Package Manager",
-                    risky=True,
-                ),
-                "",
-            )
-        return (
-            UninstallPlan(
-                app=app,
-                method="windows",
-                command=f'start ms-settings:appsfeatures',
-                detail="Open Windows Apps & Features to uninstall manually",
-                risky=False,
-            ),
-            "",
-        )
+        return _plan_windows(app), ""
 
     # Linux native packages
-    binary = cmd.split()[0].strip("\"'")
+    binary = cmd.split()[0].strip("\"'") if cmd else ""
     if binary in {"xdg-open", "env", "sh", "bash"}:
         binary = ""
     pkg = _apt_package_for_binary(binary) if binary else None
@@ -261,13 +726,36 @@ def uninstall_app(name: str, *, confirm: bool = False) -> tuple[bool, str]:
         )
 
     # Execute
-    if plan.method == "windows" and plan.command.startswith("start "):
-        ok, msg = _run(plan.command)
-        return ok, f"Opened uninstall UI for **{plan.app.name}**.\n{msg}"
+    if plan.method in {
+        "winget",
+        "windows",
+        "windows-registry",
+        "windows-settings",
+    }:
+        ok, msg = _run_windows_uninstall(plan)
+        if ok:
+            try:
+                registry.reload()
+            except Exception:
+                pass
+            if plan.method == "windows-settings" or plan.command.startswith("start "):
+                return True, (
+                    f"Opened Windows Apps & Features for **{plan.app.name}**.\n"
+                    f"{plan.detail}\n```\n{msg}\n```"
+                )
+            return True, (
+                f"Uninstalled **{plan.app.name}** via `{plan.method}`.\n"
+                f"```\n{msg}\n```"
+            )
+        return False, (
+            f"Uninstall of **{plan.app.name}** failed (`{plan.method}`).\n"
+            f"Command: `{plan.command}`\n```\n{msg}\n```\n"
+            f"You may need admin rights, or the package may be a suite "
+            f"(e.g. Kleopatra → **Gpg4win**)."
+        )
 
     ok, msg = _run(plan.command)
     if ok:
-        # Drop from registry cache so list apps updates
         try:
             registry.reload()
         except Exception:

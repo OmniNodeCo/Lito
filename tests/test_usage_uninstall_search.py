@@ -149,5 +149,102 @@ class BrainFeatureTests(unittest.TestCase):
         self.assertIn("DemoApp", r.text)
 
 
+
+
+class WindowsUninstallTests(unittest.TestCase):
+    """winget name failures (e.g. Kleopatra) should resolve via id / hints."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["LITO_DATA"] = self.tmp.name
+        os.environ["LITO_NO_DESKTOP_SCAN"] = "1"
+        from lito.apps import AppEntry
+        from lito import uninstall
+
+        self.uninstall = uninstall
+        self.kleopatra = AppEntry(
+            "Kleopatra",
+            r'"C:\Program Files (x86)\Gpg4win\bin\kleopatra.exe"',
+            source="windows",
+        )
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_parse_winget_table(self) -> None:
+        raw = """
+Name                   Id              Version
+-----------------------------------------------------
+Gpg4win                GnuPG.Gpg4win   4.3.1
+Kleopatra helper       Foo.Bar         1.0
+"""
+        rows = self.uninstall._parse_winget_table(raw)
+        self.assertGreaterEqual(len(rows), 1)
+        ids = {r["id"] for r in rows}
+        self.assertIn("GnuPG.Gpg4win", ids)
+
+    def test_candidate_queries_include_gpg4win(self) -> None:
+        qs = [q.lower() for q in self.uninstall._candidate_queries(self.kleopatra)]
+        self.assertTrue(any("gpg4win" in q for q in qs), qs)
+        self.assertTrue(any("kleopatra" in q for q in qs), qs)
+
+    def test_plan_uses_winget_id_not_name(self) -> None:
+        rows = [{"name": "Gpg4win", "id": "GnuPG.Gpg4win", "version": "4.3.1"}]
+        with mock.patch.object(self.uninstall, "_winget_available", return_value=True):
+            with mock.patch.object(self.uninstall, "_winget_list_matches", return_value=rows):
+                with mock.patch.object(self.uninstall, "platform") as plat:
+                    # force windows path via calling _plan_windows directly
+                    plan = self.uninstall._plan_windows(self.kleopatra)
+        self.assertEqual(plan.method, "winget")
+        self.assertIn("--id", plan.command)
+        self.assertIn("GnuPG.Gpg4win", plan.command)
+        self.assertNotIn('--name "Kleopatra"', plan.command)
+
+    def test_plan_registry_fallback(self) -> None:
+        reg = [
+            {
+                "name": "Gpg4win (remove only)",
+                "uninstall": r"C:\Program Files (x86)\Gpg4win\uninstall.exe",
+                "quiet": "",
+                "normal": r"C:\Program Files (x86)\Gpg4win\uninstall.exe",
+            }
+        ]
+        with mock.patch.object(self.uninstall, "_winget_available", return_value=False):
+            with mock.patch.object(
+                self.uninstall, "_windows_registry_uninstallers", return_value=reg
+            ):
+                plan = self.uninstall._plan_windows(self.kleopatra)
+        self.assertEqual(plan.method, "windows-registry")
+        self.assertIn("uninstall", plan.command.lower())
+
+    def test_run_winget_fallback_on_no_match(self) -> None:
+        plan = self.uninstall.UninstallPlan(
+            app=self.kleopatra,
+            method="winget",
+            command='winget uninstall --id "GnuPG.Gpg4win" --exact --silent',
+            detail="test",
+            risky=True,
+        )
+        calls = {"n": 0}
+
+        def fake_run(cmd, timeout=180.0):
+            calls["n"] += 1
+            c = cmd if isinstance(cmd, str) else " ".join(cmd)
+            if calls["n"] == 1:
+                return False, "No installed package found matching input criteria."
+            if "GnuPG.Gpg4win" in c and "--force" in c:
+                return True, "Successfully uninstalled"
+            return False, "No installed package found matching input criteria."
+
+        with mock.patch.object(self.uninstall, "_run", side_effect=fake_run):
+            with mock.patch.object(self.uninstall, "_winget_list_matches", return_value=[]):
+                with mock.patch.object(
+                    self.uninstall, "_plan_windows_registry_only", return_value=None
+                ):
+                    ok, msg = self.uninstall._run_windows_uninstall(plan)
+        self.assertTrue(ok)
+        self.assertIn("Successfully uninstalled", msg)
+
+
 if __name__ == "__main__":
     unittest.main()
