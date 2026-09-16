@@ -408,6 +408,35 @@ def screenshot() -> tuple[bool, str]:
     return False, "Screenshot not supported here."
 
 
+def cache_scan(*, include_system: bool = False) -> tuple[bool, str]:
+    from . import cache as cache_mod
+
+    return cache_mod.handle_cache_command(action="scan", include_system=include_system)
+
+
+def cache_clear(
+    *,
+    owner: str | None = None,
+    dry_run: bool = False,
+    include_system: bool = False,
+    unused_only: bool = True,
+) -> tuple[bool, str]:
+    """Clear caches for unused apps (or a named owner). Skips running apps."""
+    from . import cache as cache_mod
+
+    result = cache_mod.clear_caches(
+        owner=owner,
+        unused_only=unused_only,
+        include_system=include_system,
+        dry_run=dry_run,
+    )
+    head = ("**Dry run** — no files deleted.\n" if dry_run else "") + result.summary()
+    body = "\n".join(result.lines[:60])
+    more = f"\n…({len(result.lines) - 60} more lines)" if len(result.lines) > 60 else ""
+    ok = result.failed == 0
+    return ok, f"{head}\n\n{body}{more}"
+
+
 def help_text() -> str:
     return """**Lito** — tiny desktop AI (stdlib only, ~few MB RAM)
 
@@ -417,6 +446,15 @@ def help_text() -> str:
 - `open ~/Documents`
 - `list apps` / `find app terminal`
 - `find file report.pdf`
+
+**Cache cleaner** (chat or voice)
+- `scan caches` — map caches → app/system owner, mark in-use vs unused
+- `clear unused caches` — delete only unused/orphaned **user** caches
+- `clear unused caches dry run` — preview, delete nothing
+- `clear cache for firefox` — one owner (skipped if that app is running)
+- `free up cache space` / `clean app caches` — same as clear unused
+- Never wipes caches for apps that are currently running
+- System paths (`/var/cache/...`) only with `including system`
 
 **Tasks**
 - `note pick up groceries` / `show notes`

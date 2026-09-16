@@ -1,0 +1,116 @@
+name: Build
+
+on:
+  push:
+    branches: [main, "arena/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }} · ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.9", "3.11", "3.12"]
+        include:
+          - os: macos-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.11"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Show environment
+        run: |
+          python -c "import sys,platform; print(sys.version); print(platform.platform())"
+          python -c "import os; print('cwd', os.getcwd())"
+
+      - name: Unit tests
+        env:
+          LITO_DATA: ${{ runner.temp }}/lito-test-data
+          LITO_NO_DESKTOP_SCAN: "1"
+        run: python -m unittest discover -s tests -v
+
+      - name: One-shot CLI smoke
+        env:
+          LITO_DATA: ${{ runner.temp }}/lito-smoke-data
+          LITO_NO_DESKTOP_SCAN: "1"
+        run: |
+          python run_lito.py -c "help"
+          python run_lito.py -c "status"
+          python run_lito.py -c "calc 6*7"
+          python run_lito.py -c "how much ram"
+          python run_lito.py -c "scan caches"
+          python run_lito.py -c "clear unused caches dry run"
+
+      - name: Cache cleaner self-test
+        env:
+          LITO_DATA: ${{ runner.temp }}/lito-cache-data
+          LITO_NO_DESKTOP_SCAN: "1"
+        run: python -m unittest tests.test_cache -v
+
+  package:
+    name: Package check
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build sdist + wheel (stdlib only)
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          ls -la dist/
+
+      - name: Install wheel and import
+        run: |
+          python -m pip install dist/*.whl
+          python -c "import lito; from lito.brain import Brain; print('lito', lito.__version__); print(Brain().handle('status').text)"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lito-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  lint-light:
+    name: Syntax + compileall
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: compileall
+        run: python -m compileall -q lito tests run_lito.py
+      - name: Import graph
+        env:
+          LITO_NO_DESKTOP_SCAN: "1"
+        run: |
+          python -c "
+          from lito import actions, apps, brain, cache, cli, config, memory, ui
+          print('imports ok', brain.Brain().handle('help').kind)
+          "

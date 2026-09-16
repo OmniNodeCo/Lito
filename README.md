@@ -32,6 +32,11 @@ lito --cli
 | `open ~/Documents` | Opens a folder |
 | `list apps` | Shows launchable apps it found |
 | `find file report.pdf` | Filename search under your home |
+| `scan caches` | Maps caches → app/system owner; marks in-use vs unused |
+| `clear unused caches` | Deletes **unused/orphaned** user caches (skips running apps) |
+| `clear unused caches dry run` | Preview only — no deletes |
+| `clear cache for firefox` | Clears one owner's cache if that app isn't running |
+| `free up cache space` | Same as clear unused (voice-friendly) |
 | `note buy milk` / `show notes` | Local notes (`~/.lito/`) |
 | `remember wifi is secret` / `what is wifi` | Key/value memory |
 | `calc 22 * 7` | Safe arithmetic |
@@ -41,6 +46,22 @@ lito --cli
 | `screenshot` | Saves a PNG if a tool exists |
 | `system info` / `how much ram` / `time` | Machine + self stats |
 | `help` | Full command list |
+
+### Cache cleaner — how it decides
+
+1. **Discovers** known app caches (browsers, editors, chat, package managers) plus `~/.cache/*` and OS cache dirs.
+2. **Owns** each path (Firefox, Chrome, pip, APT, thumbnails, …).
+3. **Checks running processes** — if the owner is live, status = `in use` and Lito **will not delete**.
+4. **Orphaned** caches (app uninstalled, folder left behind) are safe to clear.
+5. **Protected** paths (home root, `.ssh`, `.lito`, …) are never removed.
+6. System scopes like `/var/cache/apt` need an explicit `including system` and still skip anything protected.
+
+```bash
+python3 run_lito.py -c "scan caches"
+python3 run_lito.py -c "clear unused caches dry run"
+python3 run_lito.py -c "clear unused caches"
+python3 run_lito.py -c "clear cache for pip"
+```
 
 ## Why it’s low-RAM
 
@@ -71,10 +92,20 @@ Override data dir: `export LITO_DATA=/path/to/dir`.
 
 Skip scanning `.desktop` files: `export LITO_NO_DESKTOP_SCAN=1`.
 
+## CI
+
+GitHub Actions workflow: [`.github/workflows/build.yml`](.github/workflows/build.yml)
+
+- Unit tests on Python 3.9 / 3.11 / 3.12 (Ubuntu) + macOS/Windows smoke
+- CLI one-shot smoke (`help`, `scan caches`, dry-run clean)
+- `python -m build` sdist/wheel + install check
+- `compileall` syntax gate
+
 ## Tests
 
 ```bash
-python3 -m unittest tests.test_brain -v
+python3 -m unittest discover -s tests -v
+python3 -m unittest tests.test_cache -v
 ```
 
 ## Platform notes

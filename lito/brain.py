@@ -141,6 +141,59 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "fetch",
     ),
     (re.compile(r"^\s*status\s*$", re.I), "status"),
+    # --- cache cleaner (chat + voice-friendly phrasing) -------------------
+    (
+        re.compile(
+            r"^\s*(?:scan|check|list|show|find)\s+(?:my\s+)?(?:app\s+)?caches?\b"
+            r"(?:\s+(?:for\s+)?(.+))?$",
+            re.I,
+        ),
+        "cache_scan",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:what|which)\s+caches?\s+(?:can\s+(?:i|we)\s+clear|are\s+unused|do\s+i\s+have)\b"
+            r"(.*)$",
+            re.I,
+        ),
+        "cache_scan",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:clear|clean|purge|delete|remove|wipe|free(?:\s+up)?)\s+"
+            r"(?:the\s+)?(?:unused\s+)?(?:app\s+)?caches?\b"
+            r"(?:\s+(?:for|of|from)\s+(.+?))?"
+            r"(?:\s+(dry\s*run|preview|simulate))?"
+            r"(?:\s+(?:including\s+system|system))?"
+            r"\s*$",
+            re.I,
+        ),
+        "cache_clear",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:clear|clean|purge|delete|remove)\s+"
+            r"(?:the\s+)?cache(?:s)?\s+(?:for|of)\s+(.+?)"
+            r"(?:\s+(dry\s*run|preview|simulate))?"
+            r"\s*$",
+            re.I,
+        ),
+        "cache_clear_owner",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:free\s+up\s+(?:disk\s+)?(?:cache\s+)?space|"
+            r"free\s+up\s+cache(?:\s+space)?|"
+            r"free\s+cache(?:\s+space)?|"
+            r"clean\s+(?:up\s+)?(?:my\s+)?(?:unused\s+)?caches?|"
+            r"clear\s+unused\s+app\s+caches?|"
+            r"delete\s+unused\s+caches?|"
+            r"purge\s+unused\s+caches?)\b"
+            r"(.*)$",
+            re.I,
+        ),
+        "cache_clear",
+    ),
 ]
 
 
@@ -331,6 +384,78 @@ class Brain:
             kind="action",
         )
 
+    def _cache_flags(self, text: str) -> tuple[bool, bool]:
+        """Return (dry_run, include_system) from free-form text."""
+        low = text.lower()
+        dry = bool(re.search(r"\b(dry\s*run|preview|simulate|what would)\b", low))
+        system = bool(re.search(r"\b(including system|system caches?|with system)\b", low))
+        return dry, system
+
+    def _do_cache_scan(self, text: str, m: re.Match) -> Reply:
+        dry, include_system = self._cache_flags(text)
+        _ = dry
+        owner = ""
+        if m.lastindex:
+            owner = (m.group(m.lastindex) or "").strip()
+            owner = re.sub(r"\b(dry\s*run|preview|simulate|including system|system)\b", "", owner, flags=re.I).strip()
+        ok, msg = actions.cache_scan(include_system=include_system)
+        if owner:
+            # filter message by re-scanning with owner focus via clear dry-run style listing
+            from . import cache as cache_mod
+
+            entries = cache_mod.scan_caches(include_system=include_system)
+            q = owner.lower()
+            filtered = [
+                e
+                for e in entries
+                if q in e.owner_id.lower() or q in e.owner_name.lower() or q in str(e.path).lower()
+            ]
+            if not filtered:
+                return Reply(f"No caches matched **{owner}**.\n\n" + msg, ok=True, kind="action")
+            return Reply(cache_mod.format_scan(filtered), kind="action")
+        return Reply(msg, ok=ok, kind="action")
+
+    def _do_cache_clear(self, text: str, m: re.Match) -> Reply:
+        dry, include_system = self._cache_flags(text)
+        owner = None
+        # group 1 may be owner; group 2 may be dry run depending on pattern
+        if m.lastindex:
+            g1 = (m.group(1) or "").strip() if m.lastindex >= 1 else ""
+            if g1 and not re.search(r"dry\s*run|preview|simulate|including system|^system$", g1, re.I):
+                owner = g1
+                owner = re.sub(r"\b(dry\s*run|preview|simulate|including system)\b", "", owner, flags=re.I).strip()
+                owner = owner or None
+        # Detect dry run from a capture group if present
+        for i in range(1, (m.lastindex or 0) + 1):
+            g = m.group(i)
+            if g and re.search(r"dry\s*run|preview|simulate", g, re.I):
+                dry = True
+        ok, msg = actions.cache_clear(
+            owner=owner,
+            dry_run=dry,
+            include_system=include_system,
+            unused_only=True,
+        )
+        return Reply(msg, ok=ok, kind="action")
+
+    def _do_cache_clear_owner(self, text: str, m: re.Match) -> Reply:
+        dry, include_system = self._cache_flags(text)
+        owner = (m.group(1) or "").strip()
+        owner = re.sub(r"\b(dry\s*run|preview|simulate|including system)\b", "", owner, flags=re.I).strip()
+        for i in range(1, (m.lastindex or 0) + 1):
+            g = m.group(i)
+            if g and re.search(r"dry\s*run|preview|simulate", g, re.I):
+                dry = True
+        if not owner:
+            return Reply("Name an app, e.g. `clear cache for firefox`.", ok=False, kind="help")
+        ok, msg = actions.cache_clear(
+            owner=owner,
+            dry_run=dry,
+            include_system=include_system,
+            unused_only=True,
+        )
+        return Reply(msg, ok=ok, kind="action")
+
     # --- optional remote LLM ------------------------------------------------
 
     def _try_llm(self, user_text: str) -> Reply | None:
@@ -348,7 +473,8 @@ class Brain:
             "You are Lito, a concise desktop assistant. "
             "If the user wants to open an app or run a local action, reply with ONLY a JSON line: "
             '{"action":"open_app","name":"..."} or {"action":"note","text":"..."} or '
-            '{"action":"shell","cmd":"..."} or {"action":"calc","expr":"..."}. '
+            '{"action":"shell","cmd":"..."} or {"action":"calc","expr":"..."} or '
+            '{"action":"cache_scan"} or {"action":"cache_clear","owner":null,"dry_run":false}. '
             "Otherwise answer briefly in plain text. No markdown fences."
         )
         body = {
@@ -415,5 +541,16 @@ class Brain:
             from .apps import open_url
 
             ok, msg = open_url(str(obj.get("url", "")))
+            return Reply(msg, ok=ok, kind="action")
+        if act in {"cache_scan", "scan_caches"}:
+            ok, msg = actions.cache_scan(include_system=bool(obj.get("include_system")))
+            return Reply(msg, ok=ok, kind="action")
+        if act in {"cache_clear", "clear_caches", "clear_unused_caches"}:
+            ok, msg = actions.cache_clear(
+                owner=(str(obj["owner"]) if obj.get("owner") else None),
+                dry_run=bool(obj.get("dry_run")),
+                include_system=bool(obj.get("include_system")),
+                unused_only=True,
+            )
             return Reply(msg, ok=ok, kind="action")
         return None
