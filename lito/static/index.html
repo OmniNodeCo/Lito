@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lito — desktop AI</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230d1117'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-size='16' fill='%237ee787'%3EL%3C/text%3E%3C/svg%3E" />
+</head>
+<body>
+  <div id="app">
+    <header>
+      <div class="brand">
+        <div class="logo" aria-hidden="true">L</div>
+        <div>
+          <h1>Lito</h1>
+          <p class="tag">desktop AI · tiny RAM</p>
+        </div>
+      </div>
+      <div class="status" id="status" title="Process status">…</div>
+    </header>
+
+    <main id="chat" role="log" aria-live="polite"></main>
+
+    <section class="chips" id="chips" aria-label="Suggestions">
+      <button type="button" data-q="help">help</button>
+      <button type="button" data-q="list apps">list apps</button>
+      <button type="button" data-q="system info">system info</button>
+      <button type="button" data-q="how much ram">RAM</button>
+      <button type="button" data-q="time">time</button>
+      <button type="button" data-q="note try Lito">note</button>
+      <button type="button" data-q="calc 24 * 7">calc</button>
+    </section>
+
+    <form id="composer" autocomplete="off">
+      <input
+        id="input"
+        type="text"
+        name="q"
+        placeholder="Open an app, take a note, run a task…"
+        maxlength="4000"
+        autofocus
+        aria-label="Message"
+      />
+      <button type="submit" id="send" title="Send (Enter)">Send</button>
+    </form>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

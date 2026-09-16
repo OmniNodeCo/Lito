@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lito"
+version = "0.1.0"
+description = "Lightweight desktop AI assistant — open apps, do tasks, tiny RAM"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Lito" }]
+keywords = ["assistant", "desktop", "ai", "low-memory"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Environment :: Console",
+  "Topic :: Desktop Environment",
+]
+# Zero third-party runtime dependencies — stdlib only.
+dependencies = []
+
+[project.scripts]
+lito = "lito.__main__:main"
+
+[project.optional-dependencies]
+dev = []
+
+[tool.setuptools.packages.find]
+include = ["lito*"]
+
+[tool.setuptools.package-data]
+lito = ["static/*"]
