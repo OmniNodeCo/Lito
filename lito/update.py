@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .config import DATA_DIR, ensure_data_dir
+from .config import data_dir, ensure_data_dir
 
 # Override for forks / enterprise
 DEFAULT_REPO = os.environ.get("LITO_GITHUB_REPO", "OmniNodeCo/Lito")
@@ -256,7 +256,7 @@ def apply_update(info: ReleaseInfo, *, restart: bool = False) -> tuple[bool, str
         )
 
     ensure_data_dir()
-    updates_dir = DATA_DIR / "updates"
+    updates_dir = data_dir() / "updates"
     updates_dir.mkdir(parents=True, exist_ok=True)
 
     name = info.asset_name or Path(info.asset_url).name or "lito-update"
@@ -311,7 +311,7 @@ def apply_update(info: ReleaseInfo, *, restart: bool = False) -> tuple[bool, str
         if platform.system() == "Windows":
             staged = target.with_suffix(target.suffix + ".new")
             shutil.copy2(payload, staged)
-            helper = DATA_DIR / "apply_update.bat"
+            helper = data_dir() / "apply_update.bat"
             helper.write_text(
                 "\r\n".join(
                     [
@@ -398,7 +398,7 @@ def auto_check_enabled() -> bool:
 
 def write_last_check(info: ReleaseInfo | None) -> None:
     ensure_data_dir()
-    path = DATA_DIR / "update_check.json"
+    path = data_dir() / "update_check.json"
     payload = {
         "checked_at": __import__("time").time(),
         "current": __version__,

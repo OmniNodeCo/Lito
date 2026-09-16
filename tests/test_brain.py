@@ -140,13 +140,8 @@ class MemoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         os.environ["LITO_DATA"] = self._tmpdir.name
-        # reload paths by re-importing is heavy; functions read env each time via config paths
-        import importlib
-        import lito.config as cfg
-        import lito.memory as mem
+        from lito import memory as mem
 
-        importlib.reload(cfg)
-        importlib.reload(mem)
         self.mem = mem
 
     def tearDown(self) -> None:

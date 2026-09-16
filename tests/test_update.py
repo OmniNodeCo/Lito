@@ -38,12 +38,8 @@ class CheckUpdateTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LITO_DATA"] = self.tmp.name
-        import importlib
-        import lito.config as cfg
-        import lito.update as upd
+        from lito import update as upd
 
-        importlib.reload(cfg)
-        importlib.reload(upd)
         self.upd = upd
 
     def tearDown(self) -> None:

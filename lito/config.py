@@ -7,13 +7,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-# Home for user data (notes, memory, custom apps)
-DATA_DIR = Path(os.environ.get("LITO_DATA", Path.home() / ".lito"))
-CONFIG_PATH = DATA_DIR / "config.json"
-MEMORY_PATH = DATA_DIR / "memory.json"
-NOTES_PATH = DATA_DIR / "notes.json"
-HISTORY_PATH = DATA_DIR / "history.jsonl"
-
 DEFAULTS: dict[str, Any] = {
     "host": "127.0.0.1",
     "port": 8765,
@@ -25,17 +18,41 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+def data_dir() -> Path:
+    """Resolve data dir each call so LITO_DATA env changes (tests) apply."""
+    return Path(os.environ.get("LITO_DATA", Path.home() / ".lito"))
+
+
+# Back-compat aliases (evaluated lazily via __getattr__)
+def config_path() -> Path:
+    return data_dir() / "config.json"
+
+
+def memory_path() -> Path:
+    return data_dir() / "memory.json"
+
+
+def notes_path() -> Path:
+    return data_dir() / "notes.json"
+
+
+def history_path() -> Path:
+    return data_dir() / "history.jsonl"
+
+
 def ensure_data_dir() -> Path:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    return DATA_DIR
+    d = data_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def load_config() -> dict[str, Any]:
     ensure_data_dir()
     cfg = dict(DEFAULTS)
-    if CONFIG_PATH.exists():
+    path = config_path()
+    if path.exists():
         try:
-            with CONFIG_PATH.open("r", encoding="utf-8") as f:
+            with path.open("r", encoding="utf-8") as f:
                 user = json.load(f)
             if isinstance(user, dict):
                 cfg.update(user)
@@ -46,5 +63,19 @@ def load_config() -> dict[str, Any]:
 
 def save_config(cfg: dict[str, Any]) -> None:
     ensure_data_dir()
-    with CONFIG_PATH.open("w", encoding="utf-8") as f:
+    with config_path().open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+
+
+# Module-level names some callers still read; keep as properties via __getattr__
+def __getattr__(name: str) -> Any:
+    mapping = {
+        "DATA_DIR": data_dir,
+        "CONFIG_PATH": config_path,
+        "MEMORY_PATH": memory_path,
+        "NOTES_PATH": notes_path,
+        "HISTORY_PATH": history_path,
+    }
+    if name in mapping:
+        return mapping[name]()
+    raise AttributeError(name)
