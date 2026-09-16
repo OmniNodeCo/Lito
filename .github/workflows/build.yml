@@ -52,7 +52,24 @@ jobs:
           LITO_AUTO_UPDATE: "0"
           PYTHONUTF8: "1"
           PYTHONIOENCODING: "utf-8"
-        run: python -m unittest discover -s tests -v
+        shell: bash
+        run: |
+          set +e
+          python -m unittest discover -s tests -v 2>&1 | tee "${RUNNER_TEMP}/lito-unittest.log"
+          code=${PIPESTATUS[0]}
+          if [ "$code" -ne 0 ]; then
+            echo "===== unittest log (tail) ====="
+            tail -n 200 "${RUNNER_TEMP}/lito-unittest.log" || true
+          fi
+          exit $code
+
+      - name: Upload unittest log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittest-log-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: ${{ runner.temp }}/lito-unittest.log
+          if-no-files-found: ignore
       - name: One-shot CLI smoke
         shell: bash
         env:
