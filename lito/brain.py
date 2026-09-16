@@ -279,6 +279,27 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
+            r"^\s*(?:clear|clean|purge|delete|remove)\s+"
+            r"(?:(?:the\s+)?(?:unused\s+)?(?:app\s+)?caches?\s+)?"
+            r"(?:older\s+than|not\s+used\s+(?:in|for)|unused\s+for)\s+"
+            r"([0-9]+\s*(?:days?|d|hours?|h|weeks?|w|months?|mo|m)?)\b"
+            r"(?P<rest>.*)$",
+            re.I,
+        ),
+        "cache_clear_idle",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:clear|clean)\s+caches?\s+for\s+apps?\s+"
+            r"(?:not\s+used|unused)\s+(?:in|for)\s+"
+            r"([0-9]+\s*(?:days?|d|hours?|h|weeks?|w)?)\b"
+            r"(?P<rest>.*)$",
+            re.I,
+        ),
+        "cache_clear_idle",
+    ),
+    (
+        re.compile(
             r"^\s*(?:free\s+up\s+(?:disk\s+)?(?:cache\s+)?space|"
             r"free\s+up\s+cache(?:\s+space)?|"
             r"free\s+cache(?:\s+space)?|"
@@ -554,26 +575,40 @@ class Brain:
         ok, msg = actions.open_release_page()
         return Reply(msg, ok=ok, kind="action")
 
-    def _cache_flags(self, text: str) -> tuple[bool, bool]:
-        """Return (dry_run, include_system) from free-form text."""
+    def _cache_flags(self, text: str) -> tuple[bool, bool, float | None]:
+        """Return (dry_run, include_system, idle_days) from free-form text."""
         low = text.lower()
         dry = bool(re.search(r"\b(dry\s*run|preview|simulate|what would)\b", low))
         system = bool(re.search(r"\b(including system|system caches?|with system)\b", low))
-        return dry, system
+        idle_days: float | None = None
+        m = re.search(
+            r"(?:older\s+than|not\s+used\s+(?:in|for)|unused\s+for|"
+            r"idle\s+(?:more\s+than|over)|keep\s+window)\s+"
+            r"([0-9]+\s*(?:days?|d|hours?|h|weeks?|w|months?|mo)?)",
+            low,
+        )
+        if m:
+            idle_days = self._parse_idle_token(m.group(1))
+        return dry, system, idle_days
+
+    def _parse_idle_token(self, raw: str) -> float:
+        from . import cache as cache_mod
+
+        return cache_mod._parse_idle_days(raw)
 
     def _do_cache_scan(self, text: str, m: re.Match) -> Reply:
-        dry, include_system = self._cache_flags(text)
+        dry, include_system, idle_days = self._cache_flags(text)
         _ = dry
         owner = ""
         if m.lastindex:
             owner = (m.group(m.lastindex) or "").strip()
             owner = re.sub(r"\b(dry\s*run|preview|simulate|including system|system)\b", "", owner, flags=re.I).strip()
-        ok, msg = actions.cache_scan(include_system=include_system)
+        ok, msg = actions.cache_scan(include_system=include_system, idle_days=idle_days)
         if owner:
             # filter message by re-scanning with owner focus via clear dry-run style listing
             from . import cache as cache_mod
 
-            entries = cache_mod.scan_caches(include_system=include_system)
+            entries = cache_mod.scan_caches(include_system=include_system, idle_days=idle_days)
             q = owner.lower()
             filtered = [
                 e
@@ -582,16 +617,20 @@ class Brain:
             ]
             if not filtered:
                 return Reply(f"No caches matched **{owner}**.\n\n" + msg, ok=True, kind="action")
-            return Reply(cache_mod.format_scan(filtered), kind="action")
+            return Reply(cache_mod.format_scan(filtered, idle_days=idle_days), kind="action")
         return Reply(msg, ok=ok, kind="action")
 
     def _do_cache_clear(self, text: str, m: re.Match) -> Reply:
-        dry, include_system = self._cache_flags(text)
+        dry, include_system, idle_days = self._cache_flags(text)
         owner = None
         # group 1 may be owner; group 2 may be dry run depending on pattern
         if m.lastindex:
             g1 = (m.group(1) or "").strip() if m.lastindex >= 1 else ""
-            if g1 and not re.search(r"dry\s*run|preview|simulate|including system|^system$", g1, re.I):
+            if g1 and not re.search(
+                r"dry\s*run|preview|simulate|including system|^system$|older than|not used",
+                g1,
+                re.I,
+            ):
                 owner = g1
                 owner = re.sub(r"\b(dry\s*run|preview|simulate|including system)\b", "", owner, flags=re.I).strip()
                 owner = owner or None
@@ -605,11 +644,30 @@ class Brain:
             dry_run=dry,
             include_system=include_system,
             unused_only=True,
+            idle_days=idle_days,
+        )
+        return Reply(msg, ok=ok, kind="action")
+
+    def _do_cache_clear_idle(self, text: str, m: re.Match) -> Reply:
+        """clear caches older than N days / not used in N days."""
+        dry, include_system, _ = self._cache_flags(text)
+        token = (m.group(1) or "").strip()
+        idle_days = self._parse_idle_token(token) if token else None
+        for i in range(1, (m.lastindex or 0) + 1):
+            g = m.group(i)
+            if g and re.search(r"dry\s*run|preview|simulate", g, re.I):
+                dry = True
+        ok, msg = actions.cache_clear(
+            owner=None,
+            dry_run=dry,
+            include_system=include_system,
+            unused_only=True,
+            idle_days=idle_days,
         )
         return Reply(msg, ok=ok, kind="action")
 
     def _do_cache_clear_owner(self, text: str, m: re.Match) -> Reply:
-        dry, include_system = self._cache_flags(text)
+        dry, include_system, idle_days = self._cache_flags(text)
         owner = (m.group(1) or "").strip()
         owner = re.sub(r"\b(dry\s*run|preview|simulate|including system)\b", "", owner, flags=re.I).strip()
         for i in range(1, (m.lastindex or 0) + 1):
@@ -623,6 +681,7 @@ class Brain:
             dry_run=dry,
             include_system=include_system,
             unused_only=True,
+            idle_days=idle_days,
         )
         return Reply(msg, ok=ok, kind="action")
 

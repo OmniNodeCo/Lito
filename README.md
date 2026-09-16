@@ -63,10 +63,11 @@ On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO
 | `list apps firefox` | Filter the inventory |
 | `refresh apps` | Rescan .desktop / Applications / Start Menu |
 | `find file report.pdf` | Filename search under your home |
-| `scan caches` | Maps caches → app/system owner; marks in-use vs unused |
-| `clear unused caches` | Deletes **unused/orphaned** user caches (skips running apps) |
+| `scan caches` | Maps caches → owner; shows **last used** + idle vs recent |
+| `clear unused caches` | Deletes caches for apps **not used recently** (default 7 days) |
+| `clear caches older than 30 days` | Custom keep window (also: `not used in 14 days`) |
 | `clear unused caches dry run` | Preview only — no deletes |
-| `clear cache for firefox` | Clears one owner's cache if that app isn't running |
+| `clear cache for firefox` | Clears one owner (skips if running) |
 | `free up cache space` | Same as clear unused (voice-friendly) |
 | `note buy milk` / `show notes` | Local notes (`~/.lito/`) |
 | `remember wifi is secret` / `what is wifi` | Key/value memory |
@@ -82,6 +83,7 @@ On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO
 ### Cache cleaner — how it decides
 
 1. **Discovers** known app caches (browsers, editors, chat, package managers) plus `~/.cache/*` and OS cache dirs.
+1b. **Last-used aware:** uses Lito launch history + OS signals. Apps used inside the keep window (default **7 days**) are marked *recent* and kept; only idle/orphaned caches are cleared.
 2. **Owns** each path (Firefox, Chrome, pip, APT, thumbnails, …).
 3. **Checks running processes** — if the owner is live, status = `in use` and Lito **will not delete**.
 4. **Orphaned** caches (app uninstalled, folder left behind) are safe to clear.

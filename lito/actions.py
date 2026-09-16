@@ -594,10 +594,18 @@ def screenshot() -> tuple[bool, str]:
     return False, "Screenshot not supported here."
 
 
-def cache_scan(*, include_system: bool = False) -> tuple[bool, str]:
+def cache_scan(
+    *,
+    include_system: bool = False,
+    idle_days: float | int | str | None = None,
+) -> tuple[bool, str]:
     from . import cache as cache_mod
 
-    return cache_mod.handle_cache_command(action="scan", include_system=include_system)
+    return cache_mod.handle_cache_command(
+        action="scan",
+        include_system=include_system,
+        idle_days=idle_days,
+    )
 
 
 def cache_clear(
@@ -606,8 +614,13 @@ def cache_clear(
     dry_run: bool = False,
     include_system: bool = False,
     unused_only: bool = True,
+    idle_days: float | int | str | None = None,
+    include_recent: bool = False,
 ) -> tuple[bool, str]:
-    """Clear caches for unused apps (or a named owner). Skips running apps."""
+    """Clear caches for apps not used recently (or a named owner).
+
+    Skips running apps and (by default) apps used within idle_days.
+    """
     from . import cache as cache_mod
 
     result = cache_mod.clear_caches(
@@ -615,6 +628,8 @@ def cache_clear(
         unused_only=unused_only,
         include_system=include_system,
         dry_run=dry_run,
+        idle_days=idle_days,
+        include_recent=include_recent,
     )
     head = ("**Dry run** - no files deleted.\n" if dry_run else "") + result.summary()
     body = "\n".join(result.lines[:60])
@@ -680,12 +695,13 @@ def help_text() -> str:
 - `fetch https://example.com` - read a page
 
 **Cache cleaner** (chat or voice)
-- `scan caches` - map caches -> app/system owner, mark in-use vs unused
-- `clear unused caches` - delete only unused/orphaned **user** caches
+- `scan caches` - map caches -> owner; show **last used** + idle vs recent
+- `clear unused caches` - delete caches for apps **not used recently** (default 7d)
+- `clear caches older than 30 days` / `not used in 14 days` - custom keep window
 - `clear unused caches dry run` - preview, delete nothing
-- `clear cache for firefox` - one owner (skipped if that app is running)
+- `clear cache for firefox` - one owner (skipped if running or recently used)
 - `free up cache space` / `clean app caches` - same as clear unused
-- Never wipes caches for apps that are currently running
+- Never wipes caches for apps that are **running** or used inside the keep window
 - System paths (`/var/cache/...`) only with `including system`
 
 **Updates** (GitHub Releases)

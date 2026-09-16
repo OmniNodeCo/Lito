@@ -7,11 +7,13 @@ Strategy
    or "system").
 3. Detect which owners are **currently running** (process list).
 4. Mark caches as:
-   - **active**   - owning app is running -> skip (in use)
-   - **unused**   - owner known, not running -> safe candidate
-   - **orphaned** - cache exists but owner binary not installed -> safe
+   - **active**    - owning app is running -> skip (in use)
+   - **recent**    - not running, but last used within the idle window -> keep
+   - **unused**    - not running and not used recently (or never tracked) -> safe
+   - **orphaned**  - cache exists but owner binary not installed -> safe
    - **protected** - critical system paths we never delete
-5. Delete only unused/orphaned (or a named target) under the user home
+5. Last-used comes from Lito's launch log + OS probes (see usage.py).
+6. Delete only unused/orphaned (or a named target) under the user home
    by default. System paths require an explicit flag.
 
 Keeps RAM low: streams directory sizes, no heavy indexing.
@@ -404,6 +406,10 @@ _PROTECTED_SUFFIXES = frozenset(
 )
 
 
+# Default: apps used within this many days keep their cache on "clear unused"
+DEFAULT_IDLE_DAYS = 7.0
+
+
 @dataclass
 class CacheEntry:
     path: Path
@@ -413,9 +419,12 @@ class CacheEntry:
     size_bytes: int = 0
     running: bool = False
     owner_installed: bool = True
-    status: str = "unused"  # active | unused | orphaned | protected | empty
+    status: str = "unused"  # active | recent | unused | orphaned | protected | empty
     system_scope: bool = False  # outside user home
     notes: str = ""
+    last_used: float | None = None  # epoch seconds
+    last_used_ago: str = ""
+    idle_days: float | None = None  # days since last_used (None if unknown)
 
     def as_dict(self) -> dict:
         return {
@@ -430,6 +439,9 @@ class CacheEntry:
             "status": self.status,
             "system_scope": self.system_scope,
             "notes": self.notes,
+            "last_used": self.last_used,
+            "last_used_ago": self.last_used_ago,
+            "idle_days": self.idle_days,
         }
 
 
@@ -712,6 +724,134 @@ def _owners_index() -> dict[str, tuple[str, tuple[str, ...], str]]:
     return {oid: (name, toks, kind) for oid, name, toks, _paths, kind in _OWNER_SPECS}
 
 
+def _parse_idle_days(value: float | int | str | None, default: float = DEFAULT_IDLE_DAYS) -> float:
+    """Parse idle window. Accepts days (float), or strings like '7d', '48h', '2w'."""
+    if value is None:
+        return float(default)
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+    s = str(value).strip().lower()
+    if not s:
+        return float(default)
+    m = re.match(r"^([0-9]*\.?[0-9]+)\s*([a-z]*)$", s)
+    if not m:
+        try:
+            return max(0.0, float(s))
+        except ValueError:
+            return float(default)
+    n = float(m.group(1))
+    unit = m.group(2) or "d"
+    if unit in {"", "d", "day", "days"}:
+        return max(0.0, n)
+    if unit in {"h", "hr", "hour", "hours"}:
+        return max(0.0, n / 24.0)
+    if unit in {"w", "wk", "week", "weeks"}:
+        return max(0.0, n * 7.0)
+    if unit in {"m", "mo", "month", "months"}:
+        return max(0.0, n * 30.0)
+    return max(0.0, n)
+
+
+def _last_used_for_owner(owner_id: str, owner_name: str, tokens: tuple[str, ...]) -> float | None:
+    """Last-used for cache decisions: **Lito launch log only**.
+
+    We deliberately skip OS binary atime/mtime here - those flip "recent" for
+    any installed tool (pip, node, …) and would block clearing their caches.
+    Launch tracking via open/launch is the reliable signal.
+    """
+    try:
+        from . import usage as usage_mod
+    except Exception:
+        return None
+    candidates: list[float] = []
+    oid = (owner_id or "").lower()
+    oname = (owner_name or "").lower()
+    token_l = {t.lower() for t in tokens if t}
+
+    def _take(item: dict) -> None:
+        ts = item.get("last_used")
+        if ts:
+            try:
+                candidates.append(float(ts))
+            except (TypeError, ValueError):
+                pass
+
+    # Direct keys
+    for n in (owner_id, owner_name, *tokens):
+        if not n:
+            continue
+        try:
+            item = usage_mod.get_usage(n)
+            if item:
+                _take(item)
+        except Exception:
+            continue
+
+    # Fuzzy scan of the whole log (name / command contains owner)
+    try:
+        for key, item in usage_mod.all_usage().items():
+            blob = f"{key} {item.get('name', '')} {item.get('command', '')}".lower()
+            if oid and oid in blob:
+                _take(item)
+                continue
+            if oname and len(oname) >= 3 and oname in blob:
+                _take(item)
+                continue
+            if any(t and len(t) >= 3 and t in blob for t in token_l):
+                _take(item)
+    except Exception:
+        pass
+    return max(candidates) if candidates else None
+
+
+def _classify_with_usage(
+    *,
+    running: bool,
+    installed: bool,
+    protected: bool,
+    size: int,
+    last_used: float | None,
+    idle_days: float,
+    kind: str,
+) -> tuple[str, str, float | None]:
+    """Return (status, notes, idle_days_value)."""
+    idle_val: float | None = None
+    if last_used:
+        idle_val = max(0.0, (time.time() - float(last_used)) / 86400.0)
+
+    if protected:
+        return "protected", "protected path", idle_val
+    if size == 0:
+        return "empty", "", idle_val
+    if running:
+        return "active", "owner process is running", idle_val
+    # package managers / system caches: no "recent" keep unless we have a strong signal
+    # but still honor last_used when present
+    if last_used is not None and idle_val is not None and idle_val < idle_days:
+        ago = ""
+        try:
+            from . import usage as usage_mod
+            ago = usage_mod.format_ago(last_used)
+        except Exception:
+            ago = f"{idle_val:.1f}d ago"
+        return (
+            "recent",
+            f"used {ago} (within {idle_days:g}-day keep window)",
+            idle_val,
+        )
+    if not installed:
+        return "orphaned", "owner app not installed", idle_val
+    if last_used is None:
+        # Unknown usage: still eligible as unused, but note it
+        return "unused", "no last-used signal (eligible)", idle_val
+    return (
+        "unused",
+        f"idle {idle_val:.1f}d (>{idle_days:g}d keep window)",
+        idle_val,
+    )
+
+
+
 def _iter_known_paths() -> Iterator[tuple[str, Path]]:
     for oid, _name, _toks, paths, _kind in _OWNER_SPECS:
         for pat in paths:
@@ -753,12 +893,21 @@ def scan_caches(
     *,
     include_system: bool = False,
     max_secs: float = 4.0,
+    idle_days: float | int | str | None = None,
 ) -> list[CacheEntry]:
-    """Return catalogued cache entries with sizes and running status."""
+    """Return catalogued cache entries with sizes, running status, and last-used.
+
+    idle_days: keep window for "recent" status (default 7 days). Apps used more
+    recently than this stay marked recent and are skipped by clear unused.
+    """
     home = _home().resolve(strict=False)
     procs = _running_processes()
     index = _owners_index()
     deadline = time.monotonic() + max_secs
+    keep_days = _parse_idle_days(idle_days, DEFAULT_IDLE_DAYS)
+
+    # Cache last-used lookups per owner_id for this scan
+    last_used_cache: dict[str, float | None] = {}
 
     seen: set[str] = set()
     entries: list[CacheEntry] = []
@@ -793,24 +942,27 @@ def scan_caches(
 
         size = _dir_size(resolved, deadline=min(deadline, time.monotonic() + 1.5))
 
-        if protected:
-            status = "protected"
-        elif size == 0:
-            status = "empty"
-        elif running:
-            status = "active"
-        elif tokens and not installed:
-            status = "orphaned"
-        else:
-            status = "unused"
+        if owner_id not in last_used_cache:
+            last_used_cache[owner_id] = _last_used_for_owner(owner_id, owner_name, tokens)
+        last_used = last_used_cache[owner_id]
 
-        notes = ""
-        if running:
-            notes = "owner process is running"
-        elif status == "orphaned":
-            notes = "owner app not installed"
-        elif status == "protected":
-            notes = "protected path"
+        status, notes, idle_val = _classify_with_usage(
+            running=running,
+            installed=installed if tokens else True,
+            protected=protected,
+            size=size,
+            last_used=last_used,
+            idle_days=keep_days,
+            kind=kind,
+        )
+
+        ago = ""
+        if last_used:
+            try:
+                from . import usage as usage_mod
+                ago = usage_mod.format_ago(last_used)
+            except Exception:
+                ago = ""
 
         entries.append(
             CacheEntry(
@@ -824,6 +976,9 @@ def scan_caches(
                 status=status,
                 system_scope=system_scope,
                 notes=notes,
+                last_used=last_used,
+                last_used_ago=ago,
+                idle_days=idle_val,
             )
         )
 
@@ -832,12 +987,26 @@ def scan_caches(
     for oid, p in _discover_generic_user_cache():
         add(oid, p)
 
-    # Sort largest first
-    entries.sort(key=lambda e: (-e.size_bytes, e.owner_name.lower(), str(e.path)))
+    # Sort: reclaimable (unused/orphaned) by size, then recent, then active
+    rank = {"orphaned": 0, "unused": 1, "empty": 2, "recent": 3, "active": 4, "protected": 5}
+    entries.sort(
+        key=lambda e: (
+            rank.get(e.status, 9),
+            -e.size_bytes,
+            e.owner_name.lower(),
+            str(e.path),
+        )
+    )
     return entries
 
 
-def format_scan(entries: list[CacheEntry], *, limit: int = 40) -> str:
+def format_scan(
+    entries: list[CacheEntry],
+    *,
+    limit: int = 40,
+    idle_days: float | int | str | None = None,
+) -> str:
+    keep_days = _parse_idle_days(idle_days, DEFAULT_IDLE_DAYS)
     if not entries:
         return (
             "**Cache scan** - 0 locations found (or none readable).\n"
@@ -845,43 +1014,46 @@ def format_scan(entries: list[CacheEntry], *, limit: int = 40) -> str:
         )
     total = sum(e.size_bytes for e in entries)
     unused = [e for e in entries if e.status in {"unused", "orphaned"}]
+    recent = [e for e in entries if e.status == "recent"]
     active = [e for e in entries if e.status == "active"]
     freed_potential = sum(e.size_bytes for e in unused)
+    kept_recent = sum(e.size_bytes for e in recent)
 
     lines = [
         f"**Cache scan** - {len(entries)} locations - **{_fmt(total)}** total",
-        f"- **{len(unused)}** unused/orphaned (**{_fmt(freed_potential)}** reclaimable)",
-        f"- **{len(active)}** in use (app running - skipped on clean)",
-        "",
-        "| Status | Owner | Size | Path |",
-        "|--------|-------|------|------|",
-    ]
-    # plain bullet list works better in our lite UI than tables
-    lines = [
-        f"**Cache scan** - {len(entries)} locations - **{_fmt(total)}** total",
-        f"Reclaimable (unused/orphaned): **{_fmt(freed_potential)}** - "
-        f"In use: **{len(active)}** app cache(s)",
+        f"Reclaimable (not used in **{keep_days:g}+ days** / orphaned): "
+        f"**{_fmt(freed_potential)}** ({len(unused)} cache(s))",
+        f"Kept recent (used within {keep_days:g}d): **{_fmt(kept_recent)}** "
+        f"({len(recent)}) - In use now: **{len(active)}**",
         "",
     ]
     for e in entries[:limit]:
         flag = {
             "active": "[*] in use",
-            "unused": "[ ] unused",
+            "recent": "[~] recent",
+            "unused": "[ ] idle",
             "orphaned": "[?] orphaned",
             "protected": "[!] protected",
             "empty": "- empty",
         }.get(e.status, e.status)
         scope = " [system]" if e.system_scope else ""
+        used = ""
+        if e.last_used_ago:
+            used = f" · last used {e.last_used_ago}"
+        elif e.status in {"unused", "orphaned"}:
+            used = " · last used unknown"
+        note = f" — {e.notes}" if e.notes and e.status in {"recent", "unused"} else ""
         lines.append(
-            f"- {flag} - **{e.owner_name}** ({e.kind}) - {_fmt(e.size_bytes)} - "
-            f"`{e.path}`{scope}"
+            f"- {flag} - **{e.owner_name}** ({e.kind}) - {_fmt(e.size_bytes)}"
+            f"{used} - `{e.path}`{scope}{note}"
         )
     if len(entries) > limit:
         lines.append(f"\n...and {len(entries) - limit} more.")
     lines.append(
-        "\nSay **`clear unused caches`** to delete unused/orphaned user caches, "
-        "or **`clear cache for firefox`** for one app. "
-        "Add **`dry run`** to preview."
+        f"\nSay **`clear unused caches`** to delete idle/orphaned user caches "
+        f"(keeps apps used in the last **{keep_days:g} days**). "
+        f"Try **`clear caches older than 30 days`**, **`clear cache for firefox`**, "
+        f"or add **`dry run`** to preview."
     )
     return "\n".join(lines)
 
@@ -938,16 +1110,35 @@ def clear_caches(
     include_system: bool = False,
     dry_run: bool = False,
     min_size: int = 0,
+    idle_days: float | int | str | None = None,
+    include_recent: bool = False,
 ) -> CleanResult:
     """Clear matching caches.
 
-    unused_only=True (default): only status unused/orphaned, never active/protected.
+    unused_only=True (default): only status unused/orphaned/empty — never
+    active, protected, or **recent** (used within idle_days).
+    include_recent=True: also clear "recent" caches (still never active).
     owner: filter by owner_id or owner_name (case-insensitive substring).
+    idle_days: keep window (default 7). Only caches idle longer than this
+    (or with no last-used signal / orphaned) are cleared when unused_only.
     """
-    entries = scan_caches(include_system=include_system)
+    keep_days = _parse_idle_days(idle_days, DEFAULT_IDLE_DAYS)
+    entries = scan_caches(include_system=include_system, idle_days=keep_days)
     result = CleanResult(scanned=len(entries))
+    result.lines.append(
+        f"Keep window: apps used within **{keep_days:g} days** are skipped"
+        + (" (include_recent overrides)" if include_recent else "")
+        + "."
+    )
 
     owner_q = (owner or "").strip().lower()
+    clearable = {"unused", "orphaned", "empty"}
+    if include_recent or not unused_only:
+        clearable = clearable | {"recent"}
+    # Explicit owner target: user asked for that app — allow recent, never active
+    if owner_q:
+        clearable = clearable | {"recent"}
+
     selected: list[CacheEntry] = []
     for e in entries:
         if e.size_bytes < min_size:
@@ -960,19 +1151,21 @@ def clear_caches(
             result.skipped += 1
             result.lines.append(f"skip [!] `{e.path}`")
             continue
-        if e.status == "active" and (unused_only or not owner_q):
-            # Even with a named owner, refuse to wipe a running app's cache
-            # unless unused_only is False AND owner was explicit - still refuse active.
+        if e.status == "active":
             result.skipped += 1
             result.lines.append(
                 f"skip [*] **{e.owner_name}** in use - `{e.path}`"
             )
             continue
-        if e.status == "active":
+        if e.status == "recent" and e.status not in clearable:
             result.skipped += 1
-            result.lines.append(f"skip [*] **{e.owner_name}** in use - `{e.path}`")
+            ago = e.last_used_ago or "recently"
+            result.lines.append(
+                f"skip [~] **{e.owner_name}** used {ago} "
+                f"(within {keep_days:g}d) - `{e.path}`"
+            )
             continue
-        if unused_only and e.status not in {"unused", "orphaned", "empty"}:
+        if unused_only and e.status not in clearable:
             result.skipped += 1
             continue
         if e.system_scope and not include_system:
@@ -985,23 +1178,27 @@ def clear_caches(
         result.lines.insert(
             0,
             "Nothing to clear"
-            + (f" for **{owner}**." if owner else " - no unused caches matched."),
+            + (f" for **{owner}**." if owner else " - no idle/unused caches matched.")
+            + f" (keep window {keep_days:g}d)",
         )
         return result
 
     for e in selected:
+        used = f" · last used {e.last_used_ago}" if e.last_used_ago else " · last used unknown"
         if dry_run:
             result.cleared += 1  # would-clear count
             result.freed_bytes += e.size_bytes
             result.lines.append(
-                f"would clear - **{e.owner_name}** - {_fmt(e.size_bytes)} - `{e.path}`"
+                f"would clear - **{e.owner_name}** - {_fmt(e.size_bytes)}{used} - `{e.path}`"
             )
             continue
         ok, msg, freed = _safe_delete(e.path)
         if ok:
             result.cleared += 1
             result.freed_bytes += freed
-            result.lines.append(f"cleared - **{e.owner_name}** - {_fmt(freed)} - `{e.path}`")
+            result.lines.append(
+                f"cleared - **{e.owner_name}** - {_fmt(freed)}{used} - `{e.path}`"
+            )
         else:
             result.failed += 1
             result.lines.append(f"fail - {msg}")
@@ -1015,28 +1212,29 @@ def handle_cache_command(
     owner: str | None = None,
     dry_run: bool = False,
     include_system: bool = False,
+    idle_days: float | int | str | None = None,
+    include_recent: bool = False,
 ) -> tuple[bool, str]:
     """High-level API used by the brain.
 
     action: scan | clear | clear_unused | clear_all_unused
     """
     action = (action or "scan").lower().strip()
+    keep = _parse_idle_days(idle_days, DEFAULT_IDLE_DAYS)
     if action in {"scan", "list", "show", "check"}:
-        entries = scan_caches(include_system=include_system)
-        return True, format_scan(entries)
+        entries = scan_caches(include_system=include_system, idle_days=keep)
+        return True, format_scan(entries, idle_days=keep)
 
     if action in {"clear", "clean", "delete", "purge", "clear_unused", "clear_all_unused"}:
-        unused_only = action != "clear_all"  # reserved
-        # default always unused_only for safety
+        # default always unused_only for safety (respects last-used keep window)
         unused_only = True
-        if owner and action == "clear":
-            # clearing a specific app: still skip if running
-            unused_only = True
         result = clear_caches(
             owner=owner,
             unused_only=unused_only,
             include_system=include_system,
             dry_run=dry_run,
+            idle_days=keep,
+            include_recent=include_recent,
         )
         head = ("**Dry run** - no files deleted.\n" if dry_run else "") + result.summary()
         body = "\n".join(result.lines[:60])
@@ -1059,6 +1257,8 @@ _VOICE_PHRASES = (
     "free up cache",
     "free cache space",
     "delete unused caches",
+    "clear caches older than 30 days",
+    "clear caches not used in 14 days",
     "scan caches",
     "check caches",
     "show caches",
