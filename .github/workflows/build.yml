@@ -60,17 +60,14 @@ jobs:
           if [ "$code" -ne 0 ]; then
             echo "===== unittest log (tail) ====="
             tail -n 200 "${RUNNER_TEMP}/lito-unittest.log" || true
+            {
+              echo "### Unittest failure (${{ matrix.os }} py${{ matrix.python-version }})"
+              echo '```'
+              tail -n 120 "${RUNNER_TEMP}/lito-unittest.log" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
-          exit $code
-
-      - name: Upload unittest log
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unittest-log-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: ${{ runner.temp }}/lito-unittest.log
-          if-no-files-found: ignore
-      - name: One-shot CLI smoke
+          exit $code      - name: One-shot CLI smoke
         shell: bash
         env:
           LITO_DATA: ${{ runner.temp }}/lito-smoke-data

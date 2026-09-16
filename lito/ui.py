@@ -1,6 +1,6 @@
 """Minimal local web UI served by stdlib http.server.
 
-Single process, no frameworks, no websockets — keeps RAM tiny.
+Single process, no frameworks, no websockets - keeps RAM tiny.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "Lito/0.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        # Quiet by default — uncomment for debug
+        # Quiet by default - uncomment for debug
         pass
 
     def _send(self, code: int, body: bytes, content_type: str) -> None:
@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
         length = int(self.headers.get("Content-Length") or 0)
-        # Cap body — keep memory bounded
+        # Cap body - keep memory bounded
         if length > 32_000:
             self._json(413, {"ok": False, "error": "message too long"})
             return
@@ -168,8 +168,8 @@ class LitoServer:
         self.httpd = ThreadingHTTPServer((self.host, self.port), Handler)
         actual_port = self.httpd.server_address[1]
         url = f"http://127.0.0.1:{actual_port}/"
-        print(f"Lito UI → {url}")
-        print(f"Bound  → {self.host}:{actual_port}")
+        print(f"Lito UI -> {url}")
+        print(f"Bound  -> {self.host}:{actual_port}")
         print("Tip: type 'help' in the chat. Ctrl+C to stop.")
         if open_browser:
             try:

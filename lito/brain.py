@@ -26,7 +26,7 @@ class Reply:
 
 
 # Patterns: (compiled regex, handler name, groupdict keys used)
-# Order matters — first match wins.
+# Order matters - first match wins.
 _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*(help|commands|\?)\s*$", re.I), "help"),
     (re.compile(r"^\s*(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy)\b", re.I), "greet"),
@@ -248,7 +248,7 @@ class Brain:
     def handle(self, user_text: str) -> Reply:
         raw = (user_text or "").strip()
         if not raw:
-            return Reply("Say something — try `help`.", kind="help")
+            return Reply("Say something - try `help`.", kind="help")
 
         text = _strip_filler(raw)
 
@@ -259,7 +259,7 @@ class Brain:
             handler: Callable[..., Reply] = getattr(self, f"_do_{name}")
             try:
                 return handler(text, m)
-            except Exception as exc:  # noqa: BLE001 — surface to user
+            except Exception as exc:  # noqa: BLE001 - surface to user
                 return Reply(f"Something went wrong: {exc}", ok=False, kind="error")
 
         # Soft open: "firefox please"
@@ -292,7 +292,7 @@ class Brain:
     def _do_greet(self, text: str, m: re.Match) -> Reply:
         name = self.cfg.get("name", "Lito")
         return Reply(
-            f"Hey — I'm **{name}**, your low-RAM desktop assistant. "
+            f"Hey - I'm **{name}**, your low-RAM desktop assistant. "
             f"Ask me to open apps, take notes, run quick tasks, or type `help`."
         )
 
@@ -303,7 +303,7 @@ class Brain:
         return Reply("Bye! Close the window or press Ctrl+C in the terminal when you're done.")
 
     def _do_ram(self, text: str, m: re.Match) -> Reply:
-        return Reply(actions.lito_ram_usage() + "\n\nNo big model loaded — just Python + rules.")
+        return Reply(actions.lito_ram_usage() + "\n\nNo big model loaded - just Python + rules.")
 
     def _do_sysinfo(self, text: str, m: re.Match) -> Reply:
         return Reply(actions.system_info(), kind="action")
@@ -403,10 +403,10 @@ class Brain:
     def _do_status(self, text: str, m: re.Match) -> Reply:
         s = actions.status_payload()
         return Reply(
-            f"**{s['name']}** v{s.get('version', '?')} · RAM {s.get('ram_human') or '?'} · "
-            f"{s['apps_known']} apps · {s.get('platform_tag') or s['platform']} · "
+            f"**{s['name']}** v{s.get('version', '?')} - RAM {s.get('ram_human') or '?'} - "
+            f"{s['apps_known']} apps - {s.get('platform_tag') or s['platform']} - "
             f"Python {s['python']}"
-            + (" · frozen" if s.get("frozen") else ""),
+            + (" - frozen" if s.get("frozen") else ""),
             kind="action",
         )
 
@@ -501,7 +501,7 @@ class Brain:
 
         LITO_LLM_URL example: http://127.0.0.1:11434/v1/chat/completions
         LITO_LLM_MODEL example: llama3.2:1b
-        Weights stay in the other process — Lito only holds the HTTP response.
+        Weights stay in the other process - Lito only holds the HTTP response.
         """
         url = os.environ.get("LITO_LLM_URL") or self.cfg.get("llm_url")
         if not url:

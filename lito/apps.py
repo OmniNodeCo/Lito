@@ -1,4 +1,4 @@
-"""App registry — maps friendly names to launch commands.
+"""App registry - maps friendly names to launch commands.
 
 Designed for Linux desktops; falls back gracefully on other OSes.
 Uses almost no RAM: a plain dict + lazy discovery of .desktop files.
@@ -31,7 +31,7 @@ class AppEntry:
         return any(q == a or q in a for a in self.aliases)
 
 
-# Built-in catalogue — only entries whose binary exists are kept at runtime.
+# Built-in catalogue - only entries whose binary exists are kept at runtime.
 _CATALOGUE: tuple[AppEntry, ...] = (
     AppEntry("firefox", "firefox", ("browser", "web", "mozilla"), "Web browser"),
     AppEntry("chrome", "google-chrome", ("chromium", "google chrome"), "Chrome browser"),

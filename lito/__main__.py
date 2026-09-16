@@ -1,4 +1,4 @@
-"""python -m lito  → start the assistant."""
+"""python -m lito  -> start the assistant."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import threading
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="lito",
-        description="Lito — lightweight desktop AI (open apps, do tasks, tiny RAM)",
+        description="Lito - lightweight desktop AI (open apps, do tasks, tiny RAM)",
     )
     parser.add_argument(
         "--cli",
@@ -124,7 +124,7 @@ def _spawn_update_check() -> None:
             update_mod.write_last_check(info)
             if info is not None:
                 print(
-                    f"[lito] update available: {__version__} → {info.version} "
+                    f"[lito] update available: {__version__} -> {info.version} "
                     f"(check update / install update)",
                     flush=True,
                 )

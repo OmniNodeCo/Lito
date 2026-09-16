@@ -1,4 +1,4 @@
-"""Fast unit tests — no network, no GUI."""
+"""Fast unit tests - no network, no GUI."""
 
 from __future__ import annotations
 
@@ -62,7 +62,8 @@ class BrainTests(unittest.TestCase):
     def test_time(self) -> None:
         r = self.brain.handle("time")
         self.assertTrue(r.ok)
-        self.assertIn("It's", r.text)
+        # Avoid curly/smart apostrophe mismatches across locales
+        self.assertTrue("It" in r.text and ":" in r.text, r.text)
 
     def test_ram(self) -> None:
         r = self.brain.handle("how much ram")
@@ -80,20 +81,25 @@ class BrainTests(unittest.TestCase):
         self.assertIn("Lito", r.text)
 
     def test_shell_echo(self) -> None:
-        import sys
+        import platform
 
         from lito.actions import run_shell
 
-        # Use the test runner's interpreter — no echo/cmd quoting differences
-        exe = sys.executable
-        ok, msg = run_shell(f'"{exe}" -c "print(98765)"')
-        self.assertTrue(ok, msg)
-        self.assertIn("98765", msg)
+        # Keep the command trivial so cmd.exe / sh quoting never bites CI
+        if platform.system() == "Windows":
+            cmd = "cmd /c echo hello-lito"
+            via_brain = "run cmd /c echo hello-lito"
+        else:
+            cmd = "echo hello-lito"
+            via_brain = "run echo hello-lito"
 
-        # Brain routes "run …" to shell (not open-app)
-        r = self.brain.handle(f'run "{exe}" -c "print(11111)"')
+        ok, msg = run_shell(cmd)
+        self.assertTrue(ok, msg)
+        self.assertIn("hello-lito", msg.replace("\r", ""))
+
+        r = self.brain.handle(via_brain)
         self.assertTrue(r.ok, r.text)
-        self.assertIn("11111", r.text)
+        self.assertIn("hello-lito", r.text.replace("\r", ""))
 
     def test_dangerous_shell_blocked(self) -> None:
         r = self.brain.handle("run rm -rf /")

@@ -1,4 +1,4 @@
-"""Terminal interface for Lito — even lighter than the web UI."""
+"""Terminal interface for Lito - even lighter than the web UI."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def run_cli() -> int:
     print(_c("92", BANNER.strip()))
     st = status_payload()
     print(
-        _c("90", f"  RAM {st.get('ram_human') or '?'} · {st.get('apps_known', 0)} apps · type help · Ctrl+C quit")
+        _c("90", f"  RAM {st.get('ram_human') or '?'} - {st.get('apps_known', 0)} apps - type help - Ctrl+C quit")
     )
     print()
     while True:

@@ -7,10 +7,10 @@ Strategy
    or "system").
 3. Detect which owners are **currently running** (process list).
 4. Mark caches as:
-   - **active**   — owning app is running → skip (in use)
-   - **unused**   — owner known, not running → safe candidate
-   - **orphaned** — cache exists but owner binary not installed → safe
-   - **protected** — critical system paths we never delete
+   - **active**   - owning app is running -> skip (in use)
+   - **unused**   - owner known, not running -> safe candidate
+   - **orphaned** - cache exists but owner binary not installed -> safe
+   - **protected** - critical system paths we never delete
 5. Delete only unused/orphaned (or a named target) under the user home
    by default. System paths require an explicit flag.
 
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 # ---------------------------------------------------------------------------
-# Owner catalogue: name → process match tokens + known relative cache paths
+# Owner catalogue: name -> process match tokens + known relative cache paths
 # Paths may contain ~ and are expanded later. Globs are single-level (*) only.
 # ---------------------------------------------------------------------------
 
@@ -267,7 +267,7 @@ _OWNER_SPECS: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...], str], ...]
     (
         "thumbnails",
         "Thumbnail cache",
-        (),  # no process — always "unused" if present
+        (),  # no process - always "unused" if present
         ("~/.cache/thumbnails", "~/.thumbnails"),
         "system",
     ),
@@ -343,7 +343,7 @@ _OWNER_SPECS: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...], str], ...]
     ),
 )
 
-# Directory name → owner_id for generic ~/.cache/<name> discovery
+# Directory name -> owner_id for generic ~/.cache/<name> discovery
 _CACHE_DIR_ALIASES: dict[str, str] = {
     "mozilla": "firefox",
     "google-chrome": "chrome",
@@ -444,8 +444,8 @@ class CleanResult:
 
     def summary(self) -> str:
         return (
-            f"Scanned **{self.scanned}** · cleared **{self.cleared}** · "
-            f"skipped **{self.skipped}** · failed **{self.failed}** · "
+            f"Scanned **{self.scanned}** - cleared **{self.cleared}** - "
+            f"skipped **{self.skipped}** - failed **{self.failed}** - "
             f"freed **{_fmt(self.freed_bytes)}**"
         )
 
@@ -538,7 +538,7 @@ def _is_protected(path: Path) -> bool:
 
 
 def _dir_size(path: Path, deadline: float, max_files: int = 50_000) -> int:
-    """Bounded size walk — stops early to stay light."""
+    """Bounded size walk - stops early to stay light."""
     total = 0
     n = 0
     if path.is_file():
@@ -708,7 +708,7 @@ def _owner_installed(tokens: tuple[str, ...]) -> bool:
 
 
 def _owners_index() -> dict[str, tuple[str, tuple[str, ...], str]]:
-    """owner_id → (display, tokens, kind)"""
+    """owner_id -> (display, tokens, kind)"""
     return {oid: (name, toks, kind) for oid, name, toks, _paths, kind in _OWNER_SPECS}
 
 
@@ -737,7 +737,7 @@ def _discover_generic_user_cache() -> Iterator[tuple[str, Path]]:
             if not child.is_dir() or child.is_symlink():
                 continue
             name = child.name
-            # AppData/Local is huge — only known cache-like subdirs
+            # AppData/Local is huge - only known cache-like subdirs
             if root.name == "Local":
                 low = name.lower()
                 if not any(k in low for k in ("cache", "temp", "chrome", "edge", "spotify", "code")):
@@ -840,7 +840,7 @@ def scan_caches(
 def format_scan(entries: list[CacheEntry], *, limit: int = 40) -> str:
     if not entries:
         return (
-            "**Cache scan** — 0 locations found (or none readable).\n"
+            "**Cache scan** - 0 locations found (or none readable).\n"
             "Try again after using some apps, or say `clear unused caches dry run`."
         )
     total = sum(e.size_bytes for e in entries)
@@ -849,35 +849,35 @@ def format_scan(entries: list[CacheEntry], *, limit: int = 40) -> str:
     freed_potential = sum(e.size_bytes for e in unused)
 
     lines = [
-        f"**Cache scan** — {len(entries)} locations · **{_fmt(total)}** total",
+        f"**Cache scan** - {len(entries)} locations - **{_fmt(total)}** total",
         f"- **{len(unused)}** unused/orphaned (**{_fmt(freed_potential)}** reclaimable)",
-        f"- **{len(active)}** in use (app running — skipped on clean)",
+        f"- **{len(active)}** in use (app running - skipped on clean)",
         "",
         "| Status | Owner | Size | Path |",
         "|--------|-------|------|------|",
     ]
     # plain bullet list works better in our lite UI than tables
     lines = [
-        f"**Cache scan** — {len(entries)} locations · **{_fmt(total)}** total",
-        f"Reclaimable (unused/orphaned): **{_fmt(freed_potential)}** · "
+        f"**Cache scan** - {len(entries)} locations - **{_fmt(total)}** total",
+        f"Reclaimable (unused/orphaned): **{_fmt(freed_potential)}** - "
         f"In use: **{len(active)}** app cache(s)",
         "",
     ]
     for e in entries[:limit]:
         flag = {
-            "active": "🟢 in use",
-            "unused": "⚪ unused",
-            "orphaned": "🟡 orphaned",
-            "protected": "🔒 protected",
-            "empty": "· empty",
+            "active": "[*] in use",
+            "unused": "[ ] unused",
+            "orphaned": "[?] orphaned",
+            "protected": "[!] protected",
+            "empty": "- empty",
         }.get(e.status, e.status)
         scope = " [system]" if e.system_scope else ""
         lines.append(
-            f"- {flag} · **{e.owner_name}** ({e.kind}) · {_fmt(e.size_bytes)} · "
+            f"- {flag} - **{e.owner_name}** ({e.kind}) - {_fmt(e.size_bytes)} - "
             f"`{e.path}`{scope}"
         )
     if len(entries) > limit:
-        lines.append(f"\n…and {len(entries) - limit} more.")
+        lines.append(f"\n...and {len(entries) - limit} more.")
     lines.append(
         "\nSay **`clear unused caches`** to delete unused/orphaned user caches, "
         "or **`clear cache for firefox`** for one app. "
@@ -898,19 +898,37 @@ def _safe_delete(path: Path) -> tuple[bool, str, int]:
 
     size = _dir_size(path, deadline=time.monotonic() + 2.0)
     try:
-        if path.is_symlink():
-            path.unlink(missing_ok=True)
-        elif path.is_file():
-            path.unlink(missing_ok=True)
+        if path.is_symlink() or path.is_file():
+            _unlink_retry(path)
         elif path.is_dir():
-            # Prefer clearing contents for large roots like ~/.cache/mozilla
-            # but remove the directory itself when it is a dedicated cache leaf.
-            shutil.rmtree(path, ignore_errors=False)
+            shutil.rmtree(path, onerror=_on_rm_error)
         else:
             return False, f"not a file/dir: `{path}`", 0
     except OSError as exc:
         return False, f"{path}: {exc}", 0
     return True, f"cleared `{path}`", size
+
+
+def _unlink_retry(path: Path, attempts: int = 5) -> None:
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except OSError as exc:
+            last = exc
+            time.sleep(0.05 * (i + 1))
+    if last:
+        raise last
+
+
+def _on_rm_error(func, path, exc_info) -> None:  # noqa: ANN001
+    """Windows-friendly rmtree handler: clear read-only bit and retry."""
+    try:
+        os.chmod(path, 0o700)
+        func(path)
+    except OSError:
+        pass
 
 
 def clear_caches(
@@ -940,19 +958,19 @@ def clear_caches(
                 continue
         if e.status == "protected":
             result.skipped += 1
-            result.lines.append(f"skip 🔒 `{e.path}`")
+            result.lines.append(f"skip [!] `{e.path}`")
             continue
         if e.status == "active" and (unused_only or not owner_q):
             # Even with a named owner, refuse to wipe a running app's cache
-            # unless unused_only is False AND owner was explicit — still refuse active.
+            # unless unused_only is False AND owner was explicit - still refuse active.
             result.skipped += 1
             result.lines.append(
-                f"skip 🟢 **{e.owner_name}** in use — `{e.path}`"
+                f"skip [*] **{e.owner_name}** in use - `{e.path}`"
             )
             continue
         if e.status == "active":
             result.skipped += 1
-            result.lines.append(f"skip 🟢 **{e.owner_name}** in use — `{e.path}`")
+            result.lines.append(f"skip [*] **{e.owner_name}** in use - `{e.path}`")
             continue
         if unused_only and e.status not in {"unused", "orphaned", "empty"}:
             result.skipped += 1
@@ -967,7 +985,7 @@ def clear_caches(
         result.lines.insert(
             0,
             "Nothing to clear"
-            + (f" for **{owner}**." if owner else " — no unused caches matched."),
+            + (f" for **{owner}**." if owner else " - no unused caches matched."),
         )
         return result
 
@@ -976,17 +994,17 @@ def clear_caches(
             result.cleared += 1  # would-clear count
             result.freed_bytes += e.size_bytes
             result.lines.append(
-                f"would clear · **{e.owner_name}** · {_fmt(e.size_bytes)} · `{e.path}`"
+                f"would clear - **{e.owner_name}** - {_fmt(e.size_bytes)} - `{e.path}`"
             )
             continue
         ok, msg, freed = _safe_delete(e.path)
         if ok:
             result.cleared += 1
             result.freed_bytes += freed
-            result.lines.append(f"cleared · **{e.owner_name}** · {_fmt(freed)} · `{e.path}`")
+            result.lines.append(f"cleared - **{e.owner_name}** - {_fmt(freed)} - `{e.path}`")
         else:
             result.failed += 1
-            result.lines.append(f"fail · {msg}")
+            result.lines.append(f"fail - {msg}")
 
     return result
 
@@ -1020,9 +1038,9 @@ def handle_cache_command(
             include_system=include_system,
             dry_run=dry_run,
         )
-        head = ("**Dry run** — no files deleted.\n" if dry_run else "") + result.summary()
+        head = ("**Dry run** - no files deleted.\n" if dry_run else "") + result.summary()
         body = "\n".join(result.lines[:60])
-        more = f"\n…({len(result.lines) - 60} more lines)" if len(result.lines) > 60 else ""
+        more = f"\n...({len(result.lines) - 60} more lines)" if len(result.lines) > 60 else ""
         ok = result.failed == 0
         return ok, f"{head}\n\n{body}{more}"
 

@@ -1,4 +1,4 @@
-"""Update checker unit tests — no network required."""
+"""Update checker unit tests - no network required."""
 
 from __future__ import annotations
 

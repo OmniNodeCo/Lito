@@ -1,7 +1,7 @@
 """Check GitHub Releases for newer Lito builds and install updates.
 
 Designed for frozen (PyInstaller) executables and source installs.
-Uses only the stdlib — no updater daemon, minimal RAM.
+Uses only the stdlib - no updater daemon, minimal RAM.
 """
 
 from __future__ import annotations
@@ -299,7 +299,7 @@ def apply_update(info: ReleaseInfo, *, restart: bool = False) -> tuple[bool, str
     if not is_frozen():
         return (
             True,
-            f"Downloaded **{info.version}** → `{payload}`.\n"
+            f"Downloaded **{info.version}** -> `{payload}`.\n"
             f"This install is source/pip (not a frozen exe). "
             f"Replace manually or: `pip install -U .` / grab the binary from {info.html_url}",
         )
@@ -307,7 +307,7 @@ def apply_update(info: ReleaseInfo, *, restart: bool = False) -> tuple[bool, str
     target = executable_path()
     backup = target.with_suffix(target.suffix + ".bak")
     try:
-        # On Windows, can't overwrite running exe — stage a .new and a helper script
+        # On Windows, can't overwrite running exe - stage a .new and a helper script
         if platform.system() == "Windows":
             staged = target.with_suffix(target.suffix + ".new")
             shutil.copy2(payload, staged)
@@ -331,7 +331,7 @@ def apply_update(info: ReleaseInfo, *, restart: bool = False) -> tuple[bool, str
             )
             if restart:
                 os.spawnl(os.P_NOWAIT, os.environ.get("COMSPEC", "cmd.exe"), "cmd.exe", "/c", str(helper))
-                msg += "\nRestarting…"
+                msg += "\nRestarting..."
             return True, msg
 
         # POSIX: replace binary atomically when possible
@@ -373,16 +373,16 @@ def _find_binary(root: Path) -> Path | None:
 def format_update_status(info: ReleaseInfo | None) -> str:
     if info is None:
         return (
-            f"You're on **{__version__}** ({current_platform_tag()}) — up to date "
+            f"You're on **{__version__}** ({current_platform_tag()}) - up to date "
             f"(or GitHub unreachable)."
         )
     asset = info.asset_name or "(no matching binary)"
     notes = (info.notes or "").strip()
     if len(notes) > 400:
-        notes = notes[:400] + "…"
+        notes = notes[:400] + "..."
     lines = [
-        f"**Update available:** {__version__} → **{info.version}**",
-        f"Platform: `{current_platform_tag()}` · asset: `{asset}`",
+        f"**Update available:** {__version__} -> **{info.version}**",
+        f"Platform: `{current_platform_tag()}` - asset: `{asset}`",
         f"Release: {info.html_url}",
     ]
     if notes:

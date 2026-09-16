@@ -1,4 +1,4 @@
-"""Cache scanner / cleaner tests — uses a fake home tree, never touches real caches."""
+"""Cache scanner / cleaner tests - uses a fake home tree, never touches real caches."""
 
 from __future__ import annotations
 

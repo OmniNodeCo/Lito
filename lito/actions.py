@@ -1,4 +1,4 @@
-"""Task actions Lito can perform. All stdlib — no heavy deps."""
+"""Task actions Lito can perform. All stdlib - no heavy deps."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _mem_info() -> str | None:
             used = total - avail
             return (
                 f"**RAM:** { _fmt_bytes(used) } used / { _fmt_bytes(total) } "
-                f"({used * 100 // total}%) — { _fmt_bytes(avail) } free"
+                f"({used * 100 // total}%) - { _fmt_bytes(avail) } free"
             )
     except OSError:
         pass
@@ -89,7 +89,7 @@ def _fmt_bytes(n: int) -> str:
 
 
 def lito_ram_usage() -> str:
-    """Report this process RSS — proof we stay light."""
+    """Report this process RSS - proof we stay light."""
     rss = _self_rss()
     if rss is None:
         return "Could not read process memory on this OS."
@@ -177,18 +177,15 @@ def run_shell(command: str, safe: bool = True, timeout: float = 15.0) -> tuple[b
         return False, "Empty command."
     if safe and _DANGEROUS.search(command):
         return False, "Blocked potentially dangerous command. (Disable safe_shell in config to override.)"
-    run_kwargs: dict = {
-        "shell": True,
-        "capture_output": True,
-        "text": True,
-        "timeout": timeout,
-        "cwd": str(Path.home()),
-    }
-    # Avoid popping a console window on Windows GUI sessions
-    if platform.system() == "Windows":
-        run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.run(command, **run_kwargs)
+        proc = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(Path.home()),
+        )
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s."
     except OSError as exc:
@@ -283,12 +280,12 @@ def fetch_url_text(url: str, max_bytes: int = 50_000) -> tuple[bool, str]:
     text = re.sub(r"(?is)<style.*?>.*?</style>", " ", text)
     text = re.sub(r"(?s)<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
-    return True, text[:3000] + ("…" if len(text) > 3000 else "")
+    return True, text[:3000] + ("..." if len(text) > 3000 else "")
 
 
 def what_time() -> str:
     now = dt.datetime.now()
-    return now.strftime("It's **%A, %B %d, %Y** — **%H:%M:%S**.")
+    return now.strftime("It's **%A, %B %d, %Y** - **%H:%M:%S**.")
 
 
 def set_volume_hint() -> str:
@@ -321,7 +318,7 @@ def set_volume(level: int) -> tuple[bool, str]:
             )
             return True, f"Volume set to **{level}%**."
         if system == "Windows":
-            return False, "Native volume control on Windows isn't wired yet — open Settings > System > Sound."
+            return False, "Native volume control on Windows isn't wired yet - open Settings > System > Sound."
     except OSError as exc:
         return False, str(exc)
     return False, "No volume backend available on this system."
@@ -361,7 +358,7 @@ def list_apps_text(query: str = "") -> str:
         return "No matching apps found on this system."
     lines = [f"**Apps** ({len(apps)} shown):"]
     for a in apps:
-        desc = f" — {a.description}" if a.description else ""
+        desc = f" - {a.description}" if a.description else ""
         lines.append(f"- **{a.name}** `{a.command}`{desc}")
     return "\n".join(lines)
 
@@ -433,9 +430,9 @@ def cache_clear(
         include_system=include_system,
         dry_run=dry_run,
     )
-    head = ("**Dry run** — no files deleted.\n" if dry_run else "") + result.summary()
+    head = ("**Dry run** - no files deleted.\n" if dry_run else "") + result.summary()
     body = "\n".join(result.lines[:60])
-    more = f"\n…({len(result.lines) - 60} more lines)" if len(result.lines) > 60 else ""
+    more = f"\n...({len(result.lines) - 60} more lines)" if len(result.lines) > 60 else ""
     ok = result.failed == 0
     return ok, f"{head}\n\n{body}{more}"
 
@@ -477,7 +474,7 @@ def open_release_page() -> tuple[bool, str]:
 
 
 def help_text() -> str:
-    return """**Lito** — tiny desktop AI (stdlib only, ~few MB RAM)
+    return """**Lito** - tiny desktop AI (stdlib only, ~few MB RAM)
 
 **Apps & files**
 - `open firefox` / `launch code` / `start spotify`
@@ -487,18 +484,18 @@ def help_text() -> str:
 - `find file report.pdf`
 
 **Cache cleaner** (chat or voice)
-- `scan caches` — map caches → app/system owner, mark in-use vs unused
-- `clear unused caches` — delete only unused/orphaned **user** caches
-- `clear unused caches dry run` — preview, delete nothing
-- `clear cache for firefox` — one owner (skipped if that app is running)
-- `free up cache space` / `clean app caches` — same as clear unused
+- `scan caches` - map caches -> app/system owner, mark in-use vs unused
+- `clear unused caches` - delete only unused/orphaned **user** caches
+- `clear unused caches dry run` - preview, delete nothing
+- `clear cache for firefox` - one owner (skipped if that app is running)
+- `free up cache space` / `clean app caches` - same as clear unused
 - Never wipes caches for apps that are currently running
 - System paths (`/var/cache/...`) only with `including system`
 
 **Updates** (GitHub Releases)
-- `check update` — compare with latest release
-- `install update` — download matching OS binary & apply
-- `open release page` — browser to latest release
+- `check update` - compare with latest release
+- `install update` - download matching OS binary & apply
+- `open release page` - browser to latest release
 - Auto-check on startup when `LITO_AUTO_UPDATE=1` (default)
 
 **Tasks**
@@ -512,7 +509,7 @@ def help_text() -> str:
 - `time` / `system info` / `how much ram`
 
 **Chat**
-- Type naturally — I'll match intent with a light rule engine (no big model in RAM).
+- Type naturally - I'll match intent with a light rule engine (no big model in RAM).
 - Optional: set `LITO_LLM_URL` to a local Ollama-style endpoint for smarter chat without loading weights into Lito.
 
 **Tips**
