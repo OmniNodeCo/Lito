@@ -55,7 +55,11 @@ On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO
 | `open firefox` / `launch code` | Starts the app (detached) |
 | `open https://example.com` | Opens URL in default browser |
 | `open ~/Documents` | Opens a folder |
-| `list apps` / `show all installed apps` | Full inventory of installed apps (no cap) |
+| `list apps` / `show all installed apps` | Full inventory + **last used** times |
+| `list apps by recent` / `by launches` | Sort by activity |
+| `when was firefox last used` | Last-used detail for one app |
+| `uninstall firefox` → `confirm uninstall firefox` | Safe uninstall (flatpak/snap/apt/brew/winget/…) |
+| `search web …` / `look up …` / `what is …` | Smart internet search (answers + links in chat) |
 | `list apps firefox` | Filter the inventory |
 | `refresh apps` | Rescan .desktop / Applications / Start Menu |
 | `find file report.pdf` | Filename search under your home |

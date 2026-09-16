@@ -82,6 +82,44 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "refresh_apps",
     ),
+    (
+        re.compile(
+            r"^\s*(?:list|show)\s+apps?\s+by\s+(recent|launches|name|usage)\s*$",
+            re.I,
+        ),
+        "list_apps_sorted",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:recently\s+used\s+apps?|apps?\s+last\s+used|"
+            r"last\s+used\s+apps?|most\s+used\s+apps?)\s*$",
+            re.I,
+        ),
+        "recent_apps",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:when\s+(?:was|did)\s+(.+?)\s+last\s+used|"
+            r"last\s+used\s+(?:for\s+)?(.+?)|"
+            r"how\s+often\s+(?:do\s+i\s+use|is)\s+(.+?))\s*$",
+            re.I,
+        ),
+        "app_last_used",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:confirm\s+)?uninstall\s+(.+)$",
+            re.I,
+        ),
+        "uninstall",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:remove\s+app|delete\s+app|uninstall\s+app)\s+(.+)$",
+            re.I,
+        ),
+        "uninstall",
+    ),
     # Shell before open-app so "run echo hi" is not treated as an app name
     (
         re.compile(
@@ -115,7 +153,15 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
-            r"^\s*(?:search(?:\s+the)?\s+web|web search|google|duckduckgo|look up)\s+(.+)$",
+            r"^\s*(?:search(?:\s+the)?\s+web|web search|google|duckduckgo|look up|"
+            r"search for|what is|who is|tell me about|explain)\s+(.+)$",
+            re.I,
+        ),
+        "web_search",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:ask\s+(?:the\s+)?(?:internet|web)|internet\s+search)\s+(.+)$",
             re.I,
         ),
         "web_search",
@@ -144,9 +190,10 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         ),
         "remember",
     ),
+    # recall only for explicit recall / remind - "what is" goes to web_search first
     (
         re.compile(
-            r"^\s*(?:what(?:'s| is)|recall|remind me(?: of)?)\s+(.+)$",
+            r"^\s*(?:recall|remind me(?: of)?)\s+(.+)$",
             re.I,
         ),
         "recall",
@@ -345,7 +392,43 @@ class Brain:
         low = text.lower()
         if any(k in low for k in ("all app", "installed app", "every app", "my app")) and not q:
             q = ""
-        return Reply(actions.list_apps_text(q), kind="action")
+        sort_by = "name"
+        if "by recent" in low or "recently" in low or "last used" in low:
+            sort_by = "recent"
+        elif "by launch" in low or "most used" in low:
+            sort_by = "launches"
+        return Reply(actions.list_apps_text(q, sort_by=sort_by), kind="action")
+
+    def _do_list_apps_sorted(self, text: str, m: re.Match) -> Reply:
+        key = (m.group(1) or "recent").lower()
+        sort_by = {"recent": "recent", "usage": "recent", "launches": "launches", "name": "name"}.get(
+            key, "recent"
+        )
+        return Reply(actions.list_apps_text("", sort_by=sort_by), kind="action")
+
+    def _do_recent_apps(self, text: str, m: re.Match) -> Reply:
+        return Reply(actions.app_last_used_text(""), kind="action")
+
+    def _do_app_last_used(self, text: str, m: re.Match) -> Reply:
+        name = ""
+        for i in range(1, (m.lastindex or 0) + 1):
+            g = m.group(i)
+            if g:
+                name = g.strip()
+                break
+        name = re.sub(r"\?+$", "", name).strip()
+        return Reply(actions.app_last_used_text(name), kind="action")
+
+    def _do_uninstall(self, text: str, m: re.Match) -> Reply:
+        raw = (m.group(1) or "").strip()
+        confirm = bool(re.match(r"^\s*confirm\b", text, re.I))
+        # "confirm uninstall X" already stripped by pattern sometimes
+        raw = re.sub(r"^\s*confirm\s+", "", raw, flags=re.I).strip()
+        raw = re.sub(r"^(the\s+app\s+|app\s+)", "", raw, flags=re.I).strip()
+        if not raw:
+            return Reply("Name an app to uninstall, e.g. `uninstall firefox`.", ok=False, kind="help")
+        ok, msg = actions.uninstall_app_text(raw, confirm=confirm)
+        return Reply(msg, ok=ok, kind="action")
 
     def _do_refresh_apps(self, text: str, m: re.Match) -> Reply:
         return Reply(actions.refresh_apps(), kind="action")
@@ -383,11 +466,25 @@ class Brain:
         return Reply(actions.search_files(m.group(1).strip()), kind="action")
 
     def _do_web_search(self, text: str, m: re.Match) -> Reply:
-        q = m.group(1).strip()
-        if text.lower().startswith("google"):
+        q = (m.group(1) or "").strip().rstrip("?.!")
+        low = text.lower()
+        # Avoid stealing pure memory recall "what is wifi" if we know it
+        if low.startswith(("what is ", "what's ", "whats ")):
+            from . import memory as memory_mod
+
+            key = re.sub(r"^(the|my|our)\s+", "", q, flags=re.I)
+            remembered = memory_mod.recall(key)
+            if remembered is not None:
+                return Reply(f"**{key}** = {remembered}", kind="action")
+            # math?
+            if re.fullmatch(r"[0-9.\s+\-*/%()^x]+", key):
+                ok, msg = actions.safe_calc(key)
+                return Reply(msg, ok=ok, kind="action")
+        open_browser = low.startswith("google")
+        if open_browser:
             ok, msg = actions.google_search_open(q)
         else:
-            ok, msg = actions.web_search_open(q)
+            ok, msg = actions.smart_web_search(q, open_browser=False)
         return Reply(msg, ok=ok, kind="action")
 
     def _do_calc(self, text: str, m: re.Match) -> Reply:

@@ -657,6 +657,12 @@ def launch(app: AppEntry, extra_args: Iterable[str] | None = None) -> tuple[bool
                     "close_fds": True,
                 }
                 subprocess.Popen(full, **kwargs)
+        try:
+            from .usage import record_launch
+
+            record_launch(app.name, app.command)
+        except Exception:
+            pass
         return True, f"Opened **{app.name}**."
     except FileNotFoundError:
         bin0 = (full or [cmd])[0]

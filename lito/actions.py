@@ -251,13 +251,16 @@ def search_files(query: str, root: str | None = None, limit: int = 25) -> str:
 
 
 def web_search_open(query: str) -> tuple[bool, str]:
-    url = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(query)
-    return open_url(url)
+    """Smarter default: answer in-chat with sources (stdlib HTTP)."""
+    return smart_web_search(query, open_browser=False)
 
 
 def google_search_open(query: str) -> tuple[bool, str]:
+    """In-chat brief + open Google results in the browser."""
+    ok, msg = smart_web_search(query, open_browser=False)
     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(query)
-    return open_url(url)
+    open_url(url)
+    return ok, msg + f"\n\nAlso opened Google: {url}"
 
 
 def fetch_url_text(url: str, max_bytes: int = 50_000) -> tuple[bool, str]:
@@ -352,11 +355,35 @@ def do_recall(key: str) -> str:
     return f"**{key}** = {val}"
 
 
-def list_apps_text(query: str = "", *, limit: int | None = None) -> str:
-    """Show installed apps. With no query, lists the full inventory (no 40-app cap)."""
+def list_apps_text(
+    query: str = "",
+    *,
+    limit: int | None = None,
+    sort_by: str = "name",
+    show_last_used: bool = True,
+) -> str:
+    """Show installed apps. With no query, lists the full inventory (no 40-app cap).
+
+    sort_by: name | recent | launches
+    """
+    from . import usage as usage_mod
+
     query = (query or "").strip()
+    sort_by = (sort_by or "name").lower()
     if query.lower() in {"all", "installed", "everything", "full", "*"}:
         query = ""
+    # "list apps by recent" style - query may carry sort words
+    for token, key in (
+        ("by recent", "recent"),
+        ("recently used", "recent"),
+        ("last used", "recent"),
+        ("by launches", "launches"),
+        ("most used", "launches"),
+        ("by name", "name"),
+    ):
+        if token in query.lower():
+            sort_by = key
+            query = re.sub(re.escape(token), "", query, flags=re.I).strip()
 
     if query:
         apps = registry.search(query, limit=limit if limit is not None else 200)
@@ -375,46 +402,145 @@ def list_apps_text(query: str = "", *, limit: int | None = None) -> str:
         )
         return f"No matching apps found on this system.{hint}"
 
-    by_src: dict[str, list] = {}
+    # Attach last-used info
+    enriched = []
     for a in apps:
-        src = getattr(a, "source", "") or "app"
-        by_src.setdefault(src, []).append(a)
+        info = usage_mod.enrich_last_used(a.name, a.command, getattr(a, "source", ""))
+        enriched.append((a, info))
+
+    if sort_by == "recent":
+        enriched.sort(
+            key=lambda pair: float(pair[1].get("last_used") or 0),
+            reverse=True,
+        )
+    elif sort_by == "launches":
+        enriched.sort(
+            key=lambda pair: int(pair[1].get("launches") or 0),
+            reverse=True,
+        )
+    else:
+        enriched.sort(key=lambda pair: pair[0].name.lower())
 
     total = registry.count()
     lines = [
-        f"{header} - **{len(apps)}** shown"
+        f"{header} - **{len(enriched)}** shown"
         + (f" / **{total}** known" if query else "")
+        + (f" (sorted by {sort_by})" if sort_by != "name" else "")
     ]
-    order = ["catalogue", "desktop", "flatpak", "snap", "macos", "windows", "app"]
-    sources = [s for s in order if s in by_src] + [s for s in by_src if s not in order]
-    labels = {
-        "catalogue": "Pinned / known",
-        "desktop": "Desktop entries",
-        "flatpak": "Flatpak",
-        "snap": "Snap",
-        "macos": "Applications",
-        "windows": "Start Menu",
-        "app": "Other",
-    }
 
-    for src in sources:
-        group = by_src[src]
-        lines.append(f"\n**{labels.get(src, src)}** ({len(group)})")
-        for a in group:
-            desc = ""
-            if a.description and a.description not in {src, a.name}:
-                d = a.description
-                if len(d) > 50:
-                    d = d[:47] + "..."
-                desc = f" - {d}"
+    if sort_by in {"recent", "launches"}:
+        # Flat list works better when sorted by usage
+        lines.append("")
+        for a, info in enriched:
+            used = info.get("last_used_ago") or "never"
+            launches = int(info.get("launches") or 0)
+            extra = f" · last used **{used}**"
+            if launches:
+                extra += f" · {launches}x via Lito"
             cmd = a.command
-            if len(cmd) > 60:
-                cmd = cmd[:57] + "..."
-            lines.append(f"- **{a.name}** `{cmd}`{desc}")
+            if len(cmd) > 48:
+                cmd = cmd[:45] + "..."
+            lines.append(f"- **{a.name}** `{cmd}`{extra}")
+    else:
+        by_src: dict[str, list] = {}
+        for a, info in enriched:
+            src = getattr(a, "source", "") or "app"
+            by_src.setdefault(src, []).append((a, info))
 
-    lines.append("\nSay `open <name>` to launch, or `list apps firefox` to filter.")
-    lines.append("Say `refresh apps` to rescan after installing something new.")
+        order = ["catalogue", "desktop", "flatpak", "snap", "macos", "windows", "app"]
+        sources = [s for s in order if s in by_src] + [s for s in by_src if s not in order]
+        labels = {
+            "catalogue": "Pinned / known",
+            "desktop": "Desktop entries",
+            "flatpak": "Flatpak",
+            "snap": "Snap",
+            "macos": "Applications",
+            "windows": "Start Menu",
+            "app": "Other",
+        }
+
+        for src in sources:
+            group = by_src[src]
+            lines.append(f"\n**{labels.get(src, src)}** ({len(group)})")
+            for a, info in group:
+                used = ""
+                if show_last_used:
+                    ago = info.get("last_used_ago") or "never"
+                    used = f" · last used {ago}"
+                    n = int(info.get("launches") or 0)
+                    if n:
+                        used += f" ({n}x)"
+                desc = ""
+                if a.description and a.description not in {src, a.name}:
+                    d = a.description
+                    if len(d) > 40:
+                        d = d[:37] + "..."
+                    desc = f" - {d}"
+                cmd = a.command
+                if len(cmd) > 50:
+                    cmd = cmd[:47] + "..."
+                lines.append(f"- **{a.name}** `{cmd}`{used}{desc}")
+
+    lines.append("\nSay `open <name>` · `list apps by recent` · `uninstall <name>` · `refresh apps`.")
     return "\n".join(lines)
+
+
+def app_last_used_text(name: str = "") -> str:
+    """Show last-used info for one app or a recent ranking."""
+    from . import usage as usage_mod
+
+    name = (name or "").strip()
+    if not name or name.lower() in {"all", "apps", "everything"}:
+        apps = registry.all()
+        rows = []
+        for a in apps:
+            info = usage_mod.enrich_last_used(a.name, a.command, getattr(a, "source", ""))
+            if info.get("last_used"):
+                rows.append((a, info))
+        rows.sort(key=lambda pair: float(pair[1].get("last_used") or 0), reverse=True)
+        if not rows:
+            return (
+                "No last-used data yet. Open apps with Lito (`open firefox`) "
+                "or say `list apps by recent` after some use."
+            )
+        lines = [f"**Recently used apps** ({len(rows)} with known activity):", ""]
+        for a, info in rows[:40]:
+            lines.append(
+                f"- **{a.name}** - {info.get('last_used_ago')} "
+                f"({info.get('last_used_when')})"
+                + (f" · {info['launches']}x" if info.get("launches") else "")
+            )
+        return "\n".join(lines)
+
+    app = registry.find(name)
+    if not app:
+        hits = registry.search(name, limit=5)
+        if not hits:
+            return f"No app matched **{name}**."
+        if len(hits) == 1:
+            app = hits[0]
+        else:
+            return "Did you mean: " + ", ".join(h.name for h in hits) + "?"
+    info = usage_mod.enrich_last_used(app.name, app.command, getattr(app, "source", ""))
+    return (
+        f"**{app.name}**\n"
+        f"- last used: **{info.get('last_used_ago')}** ({info.get('last_used_when')})\n"
+        f"- launches via Lito: **{info.get('launches', 0)}**\n"
+        f"- source signal: {info.get('source')}\n"
+        f"- command: `{app.command}`"
+    )
+
+
+def uninstall_app_text(name: str, *, confirm: bool = False) -> tuple[bool, str]:
+    from . import uninstall as uninstall_mod
+
+    return uninstall_mod.uninstall_app(name, confirm=confirm)
+
+
+def smart_web_search(query: str, *, open_browser: bool = False) -> tuple[bool, str]:
+    from . import websearch as web_mod
+
+    return web_mod.smart_search(query, open_browser=open_browser)
 
 
 def refresh_apps() -> str:
@@ -540,10 +666,18 @@ def help_text() -> str:
 - `open firefox` / `launch code` / `start spotify`
 - `open https://example.com`
 - `open ~/Documents`
-- `list apps` / `show all apps` / `installed apps` - full inventory
+- `list apps` / `show all apps` / `installed apps` - full inventory + last used
+- `list apps by recent` / `list apps by launches` - sort by activity
+- `when was firefox last used` / `recently used apps`
+- `uninstall firefox` then `confirm uninstall firefox`
 - `list apps firefox` / `find app terminal` - filter
 - `refresh apps` - rescan .desktop / Applications / Start Menu
 - `find file report.pdf`
+
+**Internet**
+- `search web walrus operator` / `look up MQTT` - answers + top links in chat
+- `google quantum computing` - brief + opens Google
+- `fetch https://example.com` - read a page
 
 **Cache cleaner** (chat or voice)
 - `scan caches` - map caches -> app/system owner, mark in-use vs unused
