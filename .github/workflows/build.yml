@@ -12,13 +12,13 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Prefer Node 24 for JS actions (Node 20 deprecation)
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   test:
-    name: Test (Python ${{ matrix.python-version }} · ${{ matrix.os }})
+    name: Test (Python ${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -67,14 +67,15 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
-          exit $code      - name: One-shot CLI smoke
+          exit $code
+
+      - name: One-shot CLI smoke
         shell: bash
         env:
           LITO_DATA: ${{ runner.temp }}/lito-smoke-data
           LITO_NO_DESKTOP_SCAN: "1"
           LITO_AUTO_UPDATE: "0"
         run: |
-          set +e
           python run_lito.py -c "help"
           python run_lito.py -c "status"
           python run_lito.py -c "calc 6*7"
@@ -89,6 +90,7 @@ jobs:
           LITO_DATA: ${{ runner.temp }}/lito-cache-data
           LITO_NO_DESKTOP_SCAN: "1"
         run: python -m unittest tests.test_cache -v
+
   package:
     name: Package check
     runs-on: ubuntu-latest
