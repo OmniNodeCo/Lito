@@ -80,10 +80,20 @@ class BrainTests(unittest.TestCase):
         self.assertIn("Lito", r.text)
 
     def test_shell_echo(self) -> None:
-        # Portable across Windows (cmd) and POSIX shells
-        r = self.brain.handle('run python -c "print(\'hello-lito\')"')
+        import sys
+
+        from lito.actions import run_shell
+
+        # Use the test runner's interpreter — no echo/cmd quoting differences
+        exe = sys.executable
+        ok, msg = run_shell(f'"{exe}" -c "print(98765)"')
+        self.assertTrue(ok, msg)
+        self.assertIn("98765", msg)
+
+        # Brain routes "run …" to shell (not open-app)
+        r = self.brain.handle(f'run "{exe}" -c "print(11111)"')
         self.assertTrue(r.ok, r.text)
-        self.assertIn("hello-lito", r.text)
+        self.assertIn("11111", r.text)
 
     def test_dangerous_shell_blocked(self) -> None:
         r = self.brain.handle("run rm -rf /")

@@ -616,15 +616,25 @@ def _running_processes() -> set[str]:
     system = platform.system()
     try:
         if system == "Windows":
-            out = subprocess.check_output(
-                ["tasklist", "/fo", "csv", "/nh"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
+            try:
+                out = subprocess.check_output(
+                    ["tasklist", "/FO", "CSV", "/NH"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except TypeError:
+                # creationflags unsupported
+                out = subprocess.check_output(
+                    ["tasklist", "/FO", "CSV", "/NH"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                )
             for line in out.splitlines():
                 # "name.exe","pid",...
-                m = re.match(r'"([^"]+)"', line)
+                m = re.match(r'"([^"]+)"', line.strip())
                 if m:
                     name = m.group(1).lower()
                     if name.endswith(".exe"):

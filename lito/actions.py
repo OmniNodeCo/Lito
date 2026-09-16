@@ -177,15 +177,18 @@ def run_shell(command: str, safe: bool = True, timeout: float = 15.0) -> tuple[b
         return False, "Empty command."
     if safe and _DANGEROUS.search(command):
         return False, "Blocked potentially dangerous command. (Disable safe_shell in config to override.)"
+    run_kwargs: dict = {
+        "shell": True,
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout,
+        "cwd": str(Path.home()),
+    }
+    # Avoid popping a console window on Windows GUI sessions
+    if platform.system() == "Windows":
+        run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(Path.home()),
-        )
+        proc = subprocess.run(command, **run_kwargs)
     except subprocess.TimeoutExpired:
         return False, f"Command timed out after {timeout}s."
     except OSError as exc:

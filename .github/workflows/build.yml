@@ -30,10 +30,6 @@ jobs:
           - os: windows-latest
             python-version: "3.11"
 
-    defaults:
-      run:
-        shell: bash
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,6 +40,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Show environment
+        shell: bash
         run: |
           python -c "import sys,platform; print(sys.version); print(platform.platform())"
           python -c "import os; print('cwd', os.getcwd())"
@@ -53,14 +50,17 @@ jobs:
           LITO_DATA: ${{ runner.temp }}/lito-test-data
           LITO_NO_DESKTOP_SCAN: "1"
           LITO_AUTO_UPDATE: "0"
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
         run: python -m unittest discover -s tests -v
-
       - name: One-shot CLI smoke
+        shell: bash
         env:
           LITO_DATA: ${{ runner.temp }}/lito-smoke-data
           LITO_NO_DESKTOP_SCAN: "1"
           LITO_AUTO_UPDATE: "0"
         run: |
+          set +e
           python run_lito.py -c "help"
           python run_lito.py -c "status"
           python run_lito.py -c "calc 6*7"
@@ -75,7 +75,6 @@ jobs:
           LITO_DATA: ${{ runner.temp }}/lito-cache-data
           LITO_NO_DESKTOP_SCAN: "1"
         run: python -m unittest tests.test_cache -v
-
   package:
     name: Package check
     runs-on: ubuntu-latest
