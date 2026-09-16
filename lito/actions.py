@@ -352,15 +352,75 @@ def do_recall(key: str) -> str:
     return f"**{key}** = {val}"
 
 
-def list_apps_text(query: str = "") -> str:
-    apps = registry.search(query, limit=30) if query else registry.all()[:40]
+def list_apps_text(query: str = "", *, limit: int | None = None) -> str:
+    """Show installed apps. With no query, lists the full inventory (no 40-app cap)."""
+    query = (query or "").strip()
+    if query.lower() in {"all", "installed", "everything", "full", "*"}:
+        query = ""
+
+    if query:
+        apps = registry.search(query, limit=limit if limit is not None else 200)
+        header = f"**Installed apps matching `{query}`**"
+    else:
+        apps = registry.all()
+        if limit is not None:
+            apps = apps[:limit]
+        header = "**All installed apps**"
+
     if not apps:
-        return "No matching apps found on this system."
-    lines = [f"**Apps** ({len(apps)} shown):"]
+        hint = (
+            " (desktop scan off - unset `LITO_NO_DESKTOP_SCAN`)"
+            if os.environ.get("LITO_NO_DESKTOP_SCAN") == "1"
+            else ""
+        )
+        return f"No matching apps found on this system.{hint}"
+
+    by_src: dict[str, list] = {}
     for a in apps:
-        desc = f" - {a.description}" if a.description else ""
-        lines.append(f"- **{a.name}** `{a.command}`{desc}")
+        src = getattr(a, "source", "") or "app"
+        by_src.setdefault(src, []).append(a)
+
+    total = registry.count()
+    lines = [
+        f"{header} - **{len(apps)}** shown"
+        + (f" / **{total}** known" if query else "")
+    ]
+    order = ["catalogue", "desktop", "flatpak", "snap", "macos", "windows", "app"]
+    sources = [s for s in order if s in by_src] + [s for s in by_src if s not in order]
+    labels = {
+        "catalogue": "Pinned / known",
+        "desktop": "Desktop entries",
+        "flatpak": "Flatpak",
+        "snap": "Snap",
+        "macos": "Applications",
+        "windows": "Start Menu",
+        "app": "Other",
+    }
+
+    for src in sources:
+        group = by_src[src]
+        lines.append(f"\n**{labels.get(src, src)}** ({len(group)})")
+        for a in group:
+            desc = ""
+            if a.description and a.description not in {src, a.name}:
+                d = a.description
+                if len(d) > 50:
+                    d = d[:47] + "..."
+                desc = f" - {d}"
+            cmd = a.command
+            if len(cmd) > 60:
+                cmd = cmd[:57] + "..."
+            lines.append(f"- **{a.name}** `{cmd}`{desc}")
+
+    lines.append("\nSay `open <name>` to launch, or `list apps firefox` to filter.")
+    lines.append("Say `refresh apps` to rescan after installing something new.")
     return "\n".join(lines)
+
+
+def refresh_apps() -> str:
+    registry.reload()
+    n = registry.count()
+    return f"Rescanned installed apps - **{n}** found. Say `list apps` to see them all."
 
 
 def open_app_by_name(name: str) -> tuple[bool, str]:
@@ -480,7 +540,9 @@ def help_text() -> str:
 - `open firefox` / `launch code` / `start spotify`
 - `open https://example.com`
 - `open ~/Documents`
-- `list apps` / `find app terminal`
+- `list apps` / `show all apps` / `installed apps` - full inventory
+- `list apps firefox` / `find app terminal` - filter
+- `refresh apps` - rescan .desktop / Applications / Start Menu
 - `find file report.pdf`
 
 **Cache cleaner** (chat or voice)

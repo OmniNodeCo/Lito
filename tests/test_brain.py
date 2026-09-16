@@ -116,6 +116,18 @@ class BrainTests(unittest.TestCase):
     def test_list_apps(self) -> None:
         r = self.brain.handle("list apps")
         self.assertTrue(r.ok)
+        self.assertIn("app", r.text.lower())
+
+    def test_list_all_installed_apps(self) -> None:
+        r = self.brain.handle("show all installed apps")
+        self.assertTrue(r.ok)
+        # Full-list phrasing routes correctly (inventory may be empty under
+        # LITO_NO_DESKTOP_SCAN in CI, so match header or empty-state).
+        low = r.text.lower()
+        self.assertTrue(
+            "installed apps" in low or "no matching apps" in low or "all installed" in low,
+            r.text,
+        )
 
     def test_unknown(self) -> None:
         r = self.brain.handle("blorptastic quantum waffle")

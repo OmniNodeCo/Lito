@@ -55,7 +55,9 @@ On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO
 | `open firefox` / `launch code` | Starts the app (detached) |
 | `open https://example.com` | Opens URL in default browser |
 | `open ~/Documents` | Opens a folder |
-| `list apps` | Shows launchable apps it found |
+| `list apps` / `show all installed apps` | Full inventory of installed apps (no cap) |
+| `list apps firefox` | Filter the inventory |
+| `refresh apps` | Rescan .desktop / Applications / Start Menu |
 | `find file report.pdf` | Filename search under your home |
 | `scan caches` | Maps caches → app/system owner; marks in-use vs unused |
 | `clear unused caches` | Deletes **unused/orphaned** user caches (skips running apps) |

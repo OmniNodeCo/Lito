@@ -50,12 +50,38 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"^\s*(?:what(?:'s| is)? the )?time\b|^\s*date\b", re.I), "time"),
     (
         re.compile(
-            r"^\s*(?:list|show|what)\s+apps(?:\s+(?:like|matching|for)\s+(.+))?\s*$",
+            r"^\s*(?:list|show|what|display|print)\s+"
+            r"(?:all\s+|my\s+|installed\s+|every\s+)?"
+            r"(?:installed\s+)?apps?"
+            r"(?:\s+(?:like|matching|for|named|called)\s+(.+))?\s*$",
+            re.I,
+        ),
+        "list_apps",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:all|installed|every)\s+apps?\s*$",
+            re.I,
+        ),
+        "list_apps",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:what apps (?:do i have|are installed|can you (?:see|open|launch))|"
+            r"show (?:me )?(?:my )?installed apps|"
+            r"apps installed)\s*$",
             re.I,
         ),
         "list_apps",
     ),
     (re.compile(r"^\s*(?:find|search)\s+apps?\s+(.+)$", re.I), "list_apps"),
+    (
+        re.compile(
+            r"^\s*(?:refresh|rescan|reload)\s+apps?\s*$",
+            re.I,
+        ),
+        "refresh_apps",
+    ),
     # Shell before open-app so "run echo hi" is not treated as an app name
     (
         re.compile(
@@ -312,8 +338,17 @@ class Brain:
         return Reply(actions.what_time())
 
     def _do_list_apps(self, text: str, m: re.Match) -> Reply:
-        q = (m.group(1) or "").strip() if m.lastindex else ""
+        q = ""
+        if m.lastindex:
+            q = (m.group(1) or "").strip()
+        # Phrases like "list all apps" / "show installed apps" -> full list
+        low = text.lower()
+        if any(k in low for k in ("all app", "installed app", "every app", "my app")) and not q:
+            q = ""
         return Reply(actions.list_apps_text(q), kind="action")
+
+    def _do_refresh_apps(self, text: str, m: re.Match) -> Reply:
+        return Reply(actions.refresh_apps(), kind="action")
 
     def _do_open_app(self, text: str, m: re.Match) -> Reply:
         name = m.group(1).strip()
