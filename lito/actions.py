@@ -22,8 +22,8 @@ from .apps import launch, open_path, open_url, registry
 
 # Shell denylist when safe_shell is on
 _DANGEROUS = re.compile(
-    r"(rm\s+-rf\s+/|mkfs|dd\s+if=|:(){:|fork\s*\(|shutdown|reboot|poweroff|"
-    r">\s*/dev/sd|chmod\s+-R\s+777\s+/|chown\s+-R.*/)",
+    r"(rm\s+-rf\s+/|mkfs|dd\s+if=|fork\s*\(|shutdown|reboot|poweroff|"
+    r">\s*/dev/sd|chmod\s+-R\s+777\s+/|chown\s+-R\s+/)",
     re.I,
 )
 
@@ -437,6 +437,42 @@ def cache_clear(
     return ok, f"{head}\n\n{body}{more}"
 
 
+def check_update() -> tuple[bool, str]:
+    from . import update as update_mod
+
+    try:
+        info = update_mod.check_for_update()
+        update_mod.write_last_check(info)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Update check failed: {exc}"
+    return True, update_mod.format_update_status(info)
+
+
+def install_update(*, restart: bool = False) -> tuple[bool, str]:
+    from . import update as update_mod
+
+    try:
+        info = update_mod.check_for_update()
+    except Exception as exc:  # noqa: BLE001
+        return False, f"Update check failed: {exc}"
+    if info is None:
+        return True, update_mod.format_update_status(None)
+    return update_mod.apply_update(info, restart=restart)
+
+
+def open_release_page() -> tuple[bool, str]:
+    from . import update as update_mod
+
+    try:
+        info = update_mod.check_for_update()
+    except Exception:
+        info = None
+    if info and info.html_url:
+        return open_url(info.html_url)
+    repo = update_mod.DEFAULT_REPO
+    return open_url(f"https://github.com/{repo}/releases/latest")
+
+
 def help_text() -> str:
     return """**Lito** — tiny desktop AI (stdlib only, ~few MB RAM)
 
@@ -456,6 +492,12 @@ def help_text() -> str:
 - Never wipes caches for apps that are currently running
 - System paths (`/var/cache/...`) only with `including system`
 
+**Updates** (GitHub Releases)
+- `check update` — compare with latest release
+- `install update` — download matching OS binary & apply
+- `open release page` — browser to latest release
+- Auto-check on startup when `LITO_AUTO_UPDATE=1` (default)
+
 **Tasks**
 - `note pick up groceries` / `show notes`
 - `remember wifi is blueorchid` / `what is wifi` / `recall wifi`
@@ -473,16 +515,23 @@ def help_text() -> str:
 **Tips**
 - Config lives in `~/.lito/config.json`
 - Data: notes, memory, history in `~/.lito/`
+- Standalone exe builds: see GitHub Releases / `scripts/build_exe.py`
 """
 
 
 def status_payload() -> dict[str, Any]:
+    from . import __version__
+    from . import update as update_mod
+
     rss = _self_rss()
     return {
         "name": "Lito",
+        "version": __version__,
         "ram_bytes": rss,
         "ram_human": _fmt_bytes(rss) if rss else None,
         "apps_known": len(registry.all()),
         "platform": platform.system(),
+        "platform_tag": update_mod.current_platform_tag(),
         "python": platform.python_version(),
+        "frozen": update_mod.is_frozen(),
     }

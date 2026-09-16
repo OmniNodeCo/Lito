@@ -404,7 +404,7 @@ _PROTECTED_SUFFIXES = frozenset(
 )
 
 
-@dataclass(slots=True)
+@dataclass
 class CacheEntry:
     path: Path
     owner_id: str
@@ -573,22 +573,24 @@ def _expand_globs(pattern: str) -> list[Path]:
     """Expand ~ (via _home) and a single * path segment (no recursive **)."""
     if pattern.startswith("~/") or pattern == "~":
         rest = pattern[2:] if pattern.startswith("~/") else ""
-        raw = str(_home() / rest) if rest else str(_home())
+        base_path = _home() / rest if rest else _home()
+    elif pattern.startswith("~\\"):
+        rest = pattern[2:].lstrip("\\")
+        base_path = _home() / rest if rest else _home()
     else:
-        raw = os.path.expanduser(pattern)
+        base_path = Path(os.path.expanduser(pattern))
 
+    raw = str(base_path)
     if "*" not in raw:
-        p = Path(raw)
-        return [p] if p.exists() else []
+        return [base_path] if base_path.exists() else []
 
-    parts = Path(raw).parts
-    if os.name != "nt" and raw.startswith("/"):
-        matches: list[Path] = [Path("/")]
-        start_idx = 1
-    else:
-        matches = [Path(parts[0])]
-        start_idx = 1
-    for part in parts[start_idx:]:
+    # Progressive walk that is OS-agnostic (works with drive letters on Windows)
+    parts = list(base_path.parts)
+    if not parts:
+        return []
+    matches: list[Path] = [Path(parts[0])]
+    # On POSIX absolute paths parts[0] is '/'; on Windows it's 'C:\\'
+    for part in parts[1:]:
         next_matches: list[Path] = []
         for base in matches:
             if not base.exists():
@@ -624,7 +626,10 @@ def _running_processes() -> set[str]:
                 # "name.exe","pid",...
                 m = re.match(r'"([^"]+)"', line)
                 if m:
-                    names.add(m.group(1).lower().removesuffix(".exe"))
+                    name = m.group(1).lower()
+                    if name.endswith(".exe"):
+                        name = name[:-4]
+                    names.add(name)
         else:
             # ps is widely available; fall back to /proc
             try:

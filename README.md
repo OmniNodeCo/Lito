@@ -23,6 +23,31 @@ pip install -e .    # provides the `lito` command
 lito --cli
 ```
 
+### Standalone executable
+
+```bash
+# local one-file binary (needs pyinstaller once)
+python3 scripts/build_exe.py
+# → dist/lito-<platform>
+
+# or via spec
+pip install pyinstaller
+pyinstaller lito.spec
+```
+
+CI builds Linux / Windows / macOS binaries on every green `Build` run (artifacts) and publishes them to **GitHub Releases** when you push a `v*` tag (see `.github/workflows/release.yml`).
+
+### Auto-update from GitHub Releases
+
+```bash
+lito --check-update
+lito --install-update
+# or in chat:
+#   check update
+#   install update
+```
+
+On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO_UPDATE=0` to disable). Frozen executables can self-replace; source installs download the asset for manual swap / `pip install -U`.
 ## What it can do
 
 | You say | Lito does |
@@ -45,6 +70,7 @@ lito --cli
 | `set volume 40` | Volume (PulseAudio / macOS) |
 | `screenshot` | Saves a PNG if a tool exists |
 | `system info` / `how much ram` / `time` | Machine + self stats |
+| `check update` / `install update` | GitHub Releases auto-update |
 | `help` | Full command list |
 
 ### Cache cleaner — how it decides

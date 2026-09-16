@@ -1,0 +1,261 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version tag to release (e.g. v0.1.1). Empty = use package version."
+        required: false
+        default: ""
+      draft:
+        description: "Create as draft release"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="v$(python -c 'from lito import __version__; print(__version__)')"
+          fi
+          VER="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG ($VER)"
+
+  build-exe:
+    name: Executable (${{ matrix.plat }})
+    needs: version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            plat: linux-x86_64
+          - os: macos-latest
+            plat: macos-arm64
+          - os: windows-latest
+            plat: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build deps
+        run: python -m pip install --upgrade pip pyinstaller build
+
+      - name: Sync package version with tag
+        shell: bash
+        run: |
+          VER="${{ needs.version.outputs.version }}"
+          python - <<PY
+          from pathlib import Path
+          ver = "${VER}"
+          init = Path("lito/__init__.py")
+          text = init.read_text(encoding="utf-8")
+          import re
+          text2 = re.sub(r'__version__\s*=\s*["\'][^"\']+["\']', f'__version__ = "{ver}"', text)
+          init.write_text(text2, encoding="utf-8")
+          py = Path("pyproject.toml")
+          t = py.read_text(encoding="utf-8")
+          t = re.sub(r'^version\s*=\s*"[^"]+"', f'version = "{ver}"', t, flags=re.M)
+          py.write_text(t, encoding="utf-8")
+          print("version set to", ver)
+          PY
+
+      - name: Build executable
+        shell: bash
+        run: |
+          python -m PyInstaller --noconfirm --clean lito.spec
+          ls -la dist/
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${{ needs.version.outputs.version }}"
+          PLAT="${{ matrix.plat }}"
+          mkdir -p out
+          BIN=$(ls dist/lito-* 2>/dev/null | head -1 || true)
+          if [ -z "$BIN" ]; then
+            BIN=$(ls dist/lito dist/lito.exe 2>/dev/null | head -1 || true)
+          fi
+          echo "Binary: $BIN"
+          test -n "$BIN"
+          BASE="lito-${VER}-${PLAT}"
+          if [[ "$BIN" == *.exe ]]; then
+            cp "$BIN" "out/${BASE}.exe"
+            (cd out && sha256sum "${BASE}.exe" > "${BASE}.exe.sha256" || shasum -a 256 "${BASE}.exe" > "${BASE}.exe.sha256")
+          else
+            cp "$BIN" "out/${BASE}"
+            chmod +x "out/${BASE}"
+            # also zip for consistency
+            (cd out && zip -j "${BASE}.zip" "${BASE}")
+            (cd out && sha256sum "${BASE}" "${BASE}.zip" > "${BASE}.sha256" 2>/dev/null || shasum -a 256 "${BASE}" "${BASE}.zip" > "${BASE}.sha256")
+          fi
+          ls -la out/
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lito-${{ matrix.plat }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: GitHub Release + latest.json
+    needs: [version, build-exe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download all exe artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: lito-*
+          merge-multiple: false
+
+      - name: Layout release files + latest.json
+        id: pack
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f | sort
+          # Flatten into release/
+          find artifacts -type f \( -name 'lito-*' -o -name '*.sha256' \) -exec cp -v {} release/ \;
+          ls -la release/
+
+          python - <<'PY'
+          import hashlib, json, os, re
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          tag = os.environ["TAG"]
+          repo = os.environ["REPO"]
+          rel = Path("release")
+          assets = {}
+          checksums = []
+
+          def sha256(p: Path) -> str:
+              h = hashlib.sha256()
+              with p.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          # Map file → platform
+          # lito-0.1.0-linux-x86_64[.zip|.exe]
+          pat = re.compile(r"^lito-(?P<ver>[^-]+)-(?P<plat>linux|macos|windows)-(?P<arch>[^.]+)(?P<ext>\..+)?$")
+
+          for p in sorted(rel.iterdir()):
+              if p.suffix == ".sha256" or p.name == "latest.json":
+                  continue
+              m = pat.match(p.name)
+              if not m:
+                  print("skip unrecognized", p.name)
+                  continue
+              plat = f"{m.group('plat')}-{m.group('arch')}"
+              digest = sha256(p)
+              # Prefer non-zip binary when both exist; zip is fallback
+              entry = {
+                  "name": p.name,
+                  "url": f"https://github.com/{repo}/releases/download/{tag}/{p.name}",
+                  "sha256": digest,
+                  "size": p.stat().st_size,
+              }
+              prev = assets.get(plat)
+              if prev is None or (p.suffix != ".zip" and prev["name"].endswith(".zip")):
+                  assets[plat] = entry
+              checksums.append(f"{digest}  {p.name}")
+
+          latest = {
+              "version": version,
+              "tag_name": tag,
+              "html_url": f"https://github.com/{repo}/releases/tag/{tag}",
+              "published_at": __import__("datetime").datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "notes": f"Lito {version} — desktop AI, low RAM. Auto-update via `check update` / `install update`.",
+              "assets": assets,
+          }
+          (rel / "latest.json").write_text(json.dumps(latest, indent=2) + "\n", encoding="utf-8")
+          (rel / "sha256sums.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+          print(json.dumps(latest, indent=2))
+          PY
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: Lito ${{ needs.version.outputs.version }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          generate_release_notes: true
+          body: |
+            ## Lito ${{ needs.version.outputs.version }}
+
+            Lightweight desktop AI — open apps, clear unused caches, tiny RAM.
+
+            ### Install (executable)
+            Download the binary for your OS below, `chmod +x` on macOS/Linux, and run:
+
+            ```bash
+            ./lito-${{ needs.version.outputs.version }}-<platform> --cli
+            # or with UI:
+            ./lito-${{ needs.version.outputs.version }}-<platform>
+            ```
+
+            ### Auto-update
+            From chat or CLI:
+            - `check update` — see if a newer GitHub release exists
+            - `install update` — download & apply the matching binary
+
+            `latest.json` on this release powers update checks.
+
+            ### Verify
+            ```bash
+            sha256sum -c sha256sums.txt
+            ```
+          files: |
+            release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

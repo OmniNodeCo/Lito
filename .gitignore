@@ -13,3 +13,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+# PyInstaller
+*.manifest
+*.spec.bak
+warn-*.txt

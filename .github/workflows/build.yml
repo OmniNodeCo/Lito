@@ -11,6 +11,10 @@ concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Prefer Node 24 for JS actions (Node 20 deprecation)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }} · ${{ matrix.os }})
@@ -25,6 +29,10 @@ jobs:
             python-version: "3.11"
           - os: windows-latest
             python-version: "3.11"
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
@@ -44,12 +52,14 @@ jobs:
         env:
           LITO_DATA: ${{ runner.temp }}/lito-test-data
           LITO_NO_DESKTOP_SCAN: "1"
+          LITO_AUTO_UPDATE: "0"
         run: python -m unittest discover -s tests -v
 
       - name: One-shot CLI smoke
         env:
           LITO_DATA: ${{ runner.temp }}/lito-smoke-data
           LITO_NO_DESKTOP_SCAN: "1"
+          LITO_AUTO_UPDATE: "0"
         run: |
           python run_lito.py -c "help"
           python run_lito.py -c "status"
@@ -57,6 +67,8 @@ jobs:
           python run_lito.py -c "how much ram"
           python run_lito.py -c "scan caches"
           python run_lito.py -c "clear unused caches dry run"
+          python run_lito.py --version
+          python run_lito.py -c "check update" || true
 
       - name: Cache cleaner self-test
         env:
@@ -88,11 +100,56 @@ jobs:
           python -m pip install dist/*.whl
           python -c "import lito; from lito.brain import Brain; print('lito', lito.__version__); print(Brain().handle('status').text)"
 
-      - name: Upload artifacts
+      - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lito-dist
           path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  executable:
+    name: Executable smoke (${{ matrix.plat }})
+    runs-on: ${{ matrix.os }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            plat: linux-x86_64
+          - os: windows-latest
+            plat: windows-x86_64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+      - name: Build one-file binary
+        run: python -m PyInstaller --noconfirm --clean lito.spec
+      - name: Smoke-run binary
+        env:
+          LITO_AUTO_UPDATE: "0"
+          LITO_NO_DESKTOP_SCAN: "1"
+          LITO_DATA: ${{ runner.temp }}/lito-exe-data
+        run: |
+          BIN=$(ls dist/lito-* 2>/dev/null | head -1)
+          echo "BIN=$BIN"
+          test -n "$BIN"
+          chmod +x "$BIN" || true
+          "$BIN" --version
+          "$BIN" -c "status"
+          "$BIN" -c "calc 3+4"
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: lito-exe-${{ matrix.plat }}
+          path: dist/lito-*
           if-no-files-found: error
           retention-days: 14
 
@@ -105,12 +162,14 @@ jobs:
         with:
           python-version: "3.11"
       - name: compileall
-        run: python -m compileall -q lito tests run_lito.py
+        run: python -m compileall -q lito tests run_lito.py scripts
       - name: Import graph
         env:
           LITO_NO_DESKTOP_SCAN: "1"
+          LITO_AUTO_UPDATE: "0"
         run: |
           python -c "
-          from lito import actions, apps, brain, cache, cli, config, memory, ui
+          from lito import actions, apps, brain, cache, cli, config, memory, ui, update
           print('imports ok', brain.Brain().handle('help').kind)
+          print('platform', update.current_platform_tag())
           "

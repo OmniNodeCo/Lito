@@ -18,7 +18,7 @@ from . import actions
 from .config import load_config
 
 
-@dataclass(slots=True)
+@dataclass
 class Reply:
     text: str
     ok: bool = True
@@ -141,6 +141,30 @@ _PATTERNS: list[tuple[re.Pattern[str], str]] = [
         "fetch",
     ),
     (re.compile(r"^\s*status\s*$", re.I), "status"),
+    # --- updates from GitHub Releases ------------------------------------
+    (
+        re.compile(
+            r"^\s*(?:check(?:\s+for)?\s+updates?|update check|any updates?|"
+            r"is there an update|version check)\s*$",
+            re.I,
+        ),
+        "check_update",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:install update|apply update|download update|"
+            r"update (?:lito|now|yourself)|upgrade(?:\s+lito)?)\s*$",
+            re.I,
+        ),
+        "install_update",
+    ),
+    (
+        re.compile(
+            r"^\s*(?:open (?:the )?release(?:s)? page|show releases?)\s*$",
+            re.I,
+        ),
+        "open_release",
+    ),
     # --- cache cleaner (chat + voice-friendly phrasing) -------------------
     (
         re.compile(
@@ -379,10 +403,24 @@ class Brain:
     def _do_status(self, text: str, m: re.Match) -> Reply:
         s = actions.status_payload()
         return Reply(
-            f"**{s['name']}** · RAM {s.get('ram_human') or '?'} · "
-            f"{s['apps_known']} apps · {s['platform']} · Python {s['python']}",
+            f"**{s['name']}** v{s.get('version', '?')} · RAM {s.get('ram_human') or '?'} · "
+            f"{s['apps_known']} apps · {s.get('platform_tag') or s['platform']} · "
+            f"Python {s['python']}"
+            + (" · frozen" if s.get("frozen") else ""),
             kind="action",
         )
+
+    def _do_check_update(self, text: str, m: re.Match) -> Reply:
+        ok, msg = actions.check_update()
+        return Reply(msg, ok=ok, kind="action")
+
+    def _do_install_update(self, text: str, m: re.Match) -> Reply:
+        ok, msg = actions.install_update(restart=False)
+        return Reply(msg, ok=ok, kind="action")
+
+    def _do_open_release(self, text: str, m: re.Match) -> Reply:
+        ok, msg = actions.open_release_page()
+        return Reply(msg, ok=ok, kind="action")
 
     def _cache_flags(self, text: str) -> tuple[bool, bool]:
         """Return (dry_run, include_system) from free-form text."""

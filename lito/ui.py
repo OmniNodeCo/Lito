@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import sys
 import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,7 +21,18 @@ from .actions import status_payload
 from .brain import Brain
 from .config import load_config
 
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+def _static_dir() -> Path:
+    # PyInstaller one-file unpacks data under sys._MEIPASS
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        cand = Path(meipass) / "lito" / "static"
+        if cand.is_dir():
+            return cand
+    return Path(__file__).resolve().parent / "static"
+
+
+STATIC_DIR = _static_dir()
 
 # Shared brain (stateless enough)
 _brain = Brain()

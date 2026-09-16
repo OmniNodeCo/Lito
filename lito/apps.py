@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class AppEntry:
     name: str
     command: str
