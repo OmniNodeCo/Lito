@@ -1,1 +1,1 @@
-{"params":47417,"vocab":345,"dim":32,"hidden":64,"steps":900,"name":"Lito-Nano","arch":"ctx-MLP","desc":"custom micro LLM agent brain"}
+{"params":82275,"vocab":475,"dim":40,"hidden":80,"steps":800,"name":"Lito-Nano-Gen","goal":"free-form response generation"}

@@ -45,6 +45,6 @@
 
   add(
     "bot",
-    "Hi — I'm Lito-Nano, a custom micro-LLM (~60k weights, pure Python).\nI neurally route your intent, then run tools.\nTry: calculate 2^10 · what is MQTT · remember project is lito · help"
+    "Hey — I write my own replies as I go (tiny neural stack + tools when facts matter). Ask me anything."
   );
 })();

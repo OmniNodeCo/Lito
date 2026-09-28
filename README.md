@@ -19,7 +19,7 @@ Not a wrapper around someone else's giant model. **Lito-Nano** is trained
 | **LocalReasoner** | Deterministic fallback | code only |
 | Optional `LITO_LLM_URL` | External Ollama / llama.cpp | out-of-process |
 
-IntentNet hits **~99%** tool routing on its curriculum. Tools supply
+Replies are **generated** (no preset help cards). IntentNet hits **~99%** tool routing on its curriculum. Tools supply
 **ground truth** (math, search, memory) so the tiny net never has to
 memorize the world.
 

@@ -203,7 +203,15 @@ def tool_remember(key: str, value: str) -> str:
 
 def tool_recall(key: str) -> str:
     v = mem.recall(key)
-    return f"{key} = {v}" if v is not None else f"nothing stored for '{key}'"
+    if v is None:
+        # try soft match
+        allk = mem.all_kv()
+        key_l = key.strip().lower()
+        for k, val in allk.items():
+            if key_l == k or key_l in k or k in key_l:
+                return f"{k} = {val}"
+        return f"nothing stored for '{key}'"
+    return f"{key} = {v}"
 
 
 def tool_memory_search(query: str) -> str:

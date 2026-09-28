@@ -178,20 +178,17 @@ class NanoBrain:
         ans = re.sub(r"</?ans>", "", (m.group(1) if m else text)).strip()
         return ans
 
-    def generate_chat(self, user_text: str) -> str:
-        prompt = f"<user> {user_text} <bot> <think> chat </think> <ans>"
-        ids = self.tok.encode(prompt, add_bos=True)
-        out = generate(
+    def generate_chat(self, user_text: str, obs: str = "") -> str:
+        from .generate import generate_reply
+
+        return generate_reply(
             self.model,
-            ids,
-            max_new=32,
-            temperature=0.5,
-            top_k=10,
-            eos_id=self.tok.eos_id,
+            self.tok,
+            user_text,
+            obs=obs,
+            max_new=80,
+            temperature=0.75,
         )
-        text = self.tok.decode(out[len(ids) :])
-        m = re.search(r"(.*?)(?:</ans>|$)", text, re.S)
-        return re.sub(r"</?ans>", "", (m.group(1) if m else text)).strip()
 
 
 def load_brain(path: Path | None = None) -> NanoBrain | None:

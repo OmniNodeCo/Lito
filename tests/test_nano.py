@@ -1,4 +1,4 @@
-"""Lito-Nano custom micro-LLM tests."""
+"""Lito-Nano generative stack tests."""
 
 from __future__ import annotations
 
@@ -40,6 +40,24 @@ class IntentNetTests(unittest.TestCase):
             self.assertGreater(max(probs), 0.5)
 
 
+class GenMemTests(unittest.TestCase):
+    def test_generate_coherent(self) -> None:
+        from lito.nano.markov import MarkovGen
+        from lito.nano.runtime import default_weights_dir
+
+        path = default_weights_dir() / "lito-markov.json"
+        if not path.exists():
+            raise unittest.SkipTest("markov missing")
+        m = MarkovGen.load(path)
+        hello = m.generate("hello")
+        self.assertTrue(len(hello) > 8)
+        self.assertNotIn("equals", hello.lower())
+        mqtt = m.generate("what is mqtt")
+        self.assertIn("mqtt", mqtt.lower())
+        ocean = m.generate("tell me about the ocean")
+        self.assertIn("ocean", ocean.lower())
+
+
 class NanoAgentTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -59,16 +77,16 @@ class NanoAgentTests(unittest.TestCase):
     def test_calc(self) -> None:
         r = self.agent.handle("calculate 6*7")
         self.assertIn("42", r.text)
-        self.assertIn("nano", r.text.lower())
 
     def test_memory(self) -> None:
         self.agent.handle("remember project is lito")
         r = self.agent.handle("recall project")
         self.assertIn("lito", r.text.lower())
 
-    def test_help_brands_nano(self) -> None:
+    def test_generates_not_offline(self) -> None:
         r = self.agent.handle("help")
-        self.assertIn("Lito-Nano", r.text)
+        self.assertNotIn("offline", r.text.lower())
+        self.assertTrue(len(r.text) > 20)
 
 
 if __name__ == "__main__":

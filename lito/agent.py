@@ -1,11 +1,12 @@
-"""Public Agent API — custom Lito-Nano neural stack + tools."""
+"""Agent API — neural intent + generative replies (no preset cards)."""
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
-from .reasoner import LLMReasoner, LocalReasoner, Trace
+from .reasoner import LLMReasoner, Trace
 from .tools import build_tools
 
 
@@ -17,55 +18,98 @@ class Reply:
 
     @property
     def kind(self) -> str:
-        return "think"
+        return "generate"
 
 
 class Agent:
-    """Lightest smart agent with a **custom** micro neural brain.
+    """Custom micro brain that **generates** answers.
 
-    Stack (all pure Python, no torch/numpy):
-      • IntentNet  — supervised intent classifier (tool routing)
-      • NanoLM     — tiny generative LM (chat / polish)
-      • Tools      — calc, search, memory, shell, …
-      • LocalReasoner fallback
-      • Optional LITO_LLM_URL external model
+    - IntentNet routes tools when needed
+    - Markov / WordLM / NanoLM write free-form text
+    - Tools ground math/search/memory in facts
+    - No static help menus or canned status cards as the primary reply
     """
 
     def __init__(self) -> None:
         self.tools = build_tools()
-        self.local = LocalReasoner(self.tools)
         self.llm = LLMReasoner(self.tools)
         self.show_thoughts = os.environ.get("LITO_SHOW_THOUGHTS", "1") != "0"
         self.force_local = os.environ.get("LITO_FORCE_LOCAL", "") == "1"
         self.prefer_external = os.environ.get("LITO_PREFER_EXTERNAL", "") == "1"
 
-        self.nano = None
         self.intent = None
+        self.nano = None
+        self.markov = None
+        self.wordlm = None
         self.nano_reasoner = None
 
         if not self.force_local:
             try:
-                from .nano.runtime import try_load_brain, try_load_intent
                 from .nano.reason import NanoReasoner
+                from .nano.runtime import default_weights_dir, try_load_brain, try_load_intent
 
                 self.intent = try_load_intent()
                 self.nano = try_load_brain()
-                if self.intent is not None or self.nano is not None:
-                    self.nano_reasoner = NanoReasoner(
-                        self.tools, intent=self.intent, brain=self.nano
-                    )
-            except Exception:
+                wdir = default_weights_dir()
+                mk = wdir / "lito-markov.json"
+                if mk.exists():
+                    from .nano.markov import MarkovGen
+
+                    self.markov = MarkovGen.load(mk)
+                else:
+                    # train quickly in-memory / save
+                    from .nano.markov import train_and_save
+
+                    self.markov = train_and_save(mk)
+                wl = wdir / "lito-wordlm.bin"
+                if wl.exists():
+                    try:
+                        from .nano.wordlm import WordLM
+
+                        self.wordlm = WordLM.load(wl)
+                    except Exception:
+                        self.wordlm = None
+
+                self.nano_reasoner = NanoReasoner(
+                    self.tools,
+                    intent=self.intent,
+                    brain=self.nano,
+                    wordlm=self.wordlm,
+                    markov=self.markov,
+                )
+            except Exception as exc:
                 self.nano_reasoner = None
+                self._init_error = exc
+                # still try a bare markov so we never go fully mute
+                try:
+                    from .nano.markov import MarkovGen, train_and_save
+                    from .nano.reason import NanoReasoner
+                    from .nano.runtime import default_weights_dir, try_load_intent
+
+                    mk = default_weights_dir() / "lito-markov.json"
+                    markov = MarkovGen.load(mk) if mk.exists() else train_and_save(mk)
+                    self.markov = markov
+                    self.intent = self.intent or try_load_intent()
+                    self.nano_reasoner = NanoReasoner(
+                        self.tools, intent=self.intent, markov=markov
+                    )
+                except Exception as exc2:
+                    self._init_error = (exc, exc2)
 
     def handle(self, text: str) -> Reply:
         text = (text or "").strip()
         if self.prefer_external and self.llm.available() and not self.force_local:
             trace = self.llm.think(text)
-        elif self.nano_reasoner is not None and not self.force_local:
+        elif self.nano_reasoner is not None:
             try:
                 trace = self.nano_reasoner.think(text)
-            except Exception:
-                trace = self.local.think(text)
+            except Exception as exc:
+                trace = Trace(mode="error", answer=f"I hit a snag generating that: {exc}")
         else:
-            trace = self.local.think(text)
-        return Reply(text=trace.format(show_thoughts=self.show_thoughts), ok=True, trace=trace)
+            # last ditch generative-ish line
+            trace = Trace(
+                mode="bare",
+                answer=f"I hear “{text}”. My generative core is offline; restart me or retrain weights.",
+            )
+        out = trace.format(show_thoughts=self.show_thoughts)
+        return Reply(text=out, ok=True, trace=trace)

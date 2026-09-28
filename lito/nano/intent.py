@@ -281,10 +281,52 @@ def build_labeled_data() -> list[tuple[str, str]]:
     for k, v in [("wifi", "home"), ("project", "lito"), ("city", "miami"), ("port", "8765"), ("color", "green")]:
         add("remember", [f"remember {k} is {v}", f"remember that {k} is {v}", f"remember {k} = {v}"], 3)
         add("recall", [f"recall {k}", f"what is my {k}", f"remind me of {k}", f"what's my {k}"], 3)
-    add("open", ["open https://example.com", "open firefox", "launch code", "start terminal", "open ~/Documents"], 3)
+    add(
+        "open",
+        [
+            "open https://example.com",
+            "open firefox",
+            "launch code",
+            "start terminal",
+            "open ~/Documents",
+            "open the browser",
+            "launch spotify",
+            "start calculator",
+        ],
+        4,
+    )
+    # "tell me about X" must be search, never open
+    add(
+        "search",
+        [
+            "tell me about the ocean",
+            "tell me about music",
+            "tell me about ai",
+            "tell me about love",
+            "tell me about python",
+            "tell me about gravity",
+        ],
+        5,
+    )
     add("shell", ["run echo hello", "shell ls", "run date", "exec uname -a"], 3)
     add("note", ["note buy milk", "note call mom", "jot meeting at 3", "take a note ship it"], 3)
     add("find", ["find file report.pdf", "find notes.txt", "locate readme", "find file budget"], 3)
+    # keep soft chat from looking like recall
+    add(
+        "chat",
+        [
+            "i failed today",
+            "i am stressed",
+            "motivate me",
+            "i am bored",
+            "i am sad",
+            "i am happy",
+            "tell me a story",
+            "give me advice",
+            "how do i stay productive",
+        ],
+        6,
+    )
     random.shuffle(data)
     return data
 

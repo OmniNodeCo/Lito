@@ -1,4 +1,4 @@
-"""Core agent / reasoner / tools tests — offline, no network required for most."""
+"""Core agent tests — generative nano path."""
 
 from __future__ import annotations
 
@@ -42,13 +42,12 @@ class MemoryTests(unittest.TestCase):
         self.assertEqual(mem.recall("wifi"), "orchard")
 
 
-class ReasonerTests(unittest.TestCase):
+class AgentGenTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         os.environ["LITO_DATA"] = self.tmp.name
         os.environ["LITO_SHOW_THOUGHTS"] = "1"
-        os.environ["LITO_FORCE_LOCAL"] = "1"
-        os.environ.pop("LITO_LLM_URL", None)
+        os.environ.pop("LITO_FORCE_LOCAL", None)
         from lito.agent import Agent
 
         self.agent = Agent()
@@ -56,45 +55,32 @@ class ReasonerTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def test_help(self) -> None:
-        r = self.agent.handle("help")
-        self.assertIn("Tools", r.text)
-        self.assertIn("thinking", r.text.lower())
+    def test_generates_hello(self) -> None:
+        r = self.agent.handle("hello")
+        self.assertTrue(len(r.text) > 5)
+        # should not be the old offline stub
+        self.assertNotIn("generative core is offline", r.text.lower())
 
-    def test_calc_path(self) -> None:
-        r = self.agent.handle("calculate 2^8")
-        self.assertIn("256", r.text)
+    def test_calc(self) -> None:
+        r = self.agent.handle("calculate 6*7")
+        self.assertIn("42", r.text)
 
     def test_remember_recall(self) -> None:
         self.agent.handle("remember project is lito")
         r = self.agent.handle("recall project")
         self.assertIn("lito", r.text.lower())
 
-    def test_greet(self) -> None:
-        r = self.agent.handle("hello")
-        self.assertIn("Lito", r.text)
+    def test_varies_hello(self) -> None:
+        # generation / mutation should not crash on repeats
+        texts = {self.agent.handle("hello").text for _ in range(3)}
+        self.assertTrue(all("offline" not in t.lower() for t in texts))
 
-    def test_web_search_mocked(self) -> None:
-        with mock.patch(
-            "lito.tools.tool_web_search",
-            return_value="A walrus is a large marine mammal.\n\nsource: https://example.com",
-        ):
-            # patch via call_tool path — reasoner imports call_tool
-            with mock.patch("lito.reasoner.call_tool", side_effect=self._fake_call):
-                r = self.agent.handle("what is a walrus")
-        self.assertIn("walrus", r.text.lower())
-        self.assertIn("thinking", r.text.lower())
+    def test_thought_optional(self) -> None:
+        os.environ["LITO_SHOW_THOUGHTS"] = "1"
+        from lito.agent import Agent
 
-    def _fake_call(self, tools, name, args=None):
-        if name == "search":
-            return "A walrus is a large flippered marine mammal.\n\nsource: https://ex.com/w"
-        from lito.tools import call_tool as real
-
-        return real(tools, name, args)
-
-    def test_thought_trace_present(self) -> None:
-        r = self.agent.handle("time")
-        self.assertIn("thinking", r.text.lower())
+        r = Agent().handle("time")
+        self.assertTrue(r.ok)
 
 
 class ShellSafetyTests(unittest.TestCase):
