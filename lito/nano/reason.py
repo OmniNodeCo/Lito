@@ -155,6 +155,12 @@ class NanoReasoner:
             if route == "sysinfo" and re.search(r"\b(who are you|your name|how are you)\b", low):
                 route = "chat"
                 trace.steps.append(Step("guard: sysinfo→chat"))
+            if re.match(r"^(?:recall|remind me)\b", low):
+                route = "recall"
+                trace.steps.append(Step("guard: →recall"))
+            if re.match(r"^remember\b", low):
+                route = "remember"
+                trace.steps.append(Step("guard: →remember"))
         else:
             route = self._guess(text)
 

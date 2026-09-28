@@ -82,8 +82,16 @@ class MarkovGen:
         for u, a in plain:
             self.observe(a, u)
         for u, obs, a in grounded:
-            # keep non-arithmetic grounded answers
-            if re.search(r"\b(equals|plus|times)\b", a.lower()) and re.search(r"\d", a):
+            # keep non-arithmetic grounded answers; skip memory-template lines
+            # (those must come from live tool facts, not corpus retrieval)
+            al = a.lower()
+            if re.search(r"\b(equals|plus|times)\b", al) and re.search(r"\d", a):
+                continue
+            if re.search(r"\b(remember|stored|memory|you told me|from memory|i recall)\b", al):
+                continue
+            if re.search(r"\b(wifi|project|city|port|color)\b", al) and re.search(
+                r"\b(is|as|=)\b", al
+            ):
                 continue
             self.observe(a, u)
 
