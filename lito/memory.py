@@ -1,4 +1,4 @@
-"""Ultra-light persistent memory (JSON). Avoids any DB dependency."""
+"""Tiny persistent memory (notes + key/value). File-backed, few KB."""
 
 from __future__ import annotations
 
@@ -7,53 +7,53 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .config import (
-    ensure_data_dir,
-    history_path,
-    memory_path,
-    notes_path,
-)
+from .config import data_dir, ensure_data_dir
+
+_MEM = "memory.json"
+_MAX_NOTES = 200
+_MAX_KV = 500
 
 
-def _read_json(path: Path, default: Any) -> Any:
-    if not path.exists():
-        return default
+def _path() -> Path:
+    return data_dir() / _MEM
+
+
+def _load() -> dict[str, Any]:
+    p = _path()
+    if not p.exists():
+        return {"kv": {}, "notes": []}
     try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"kv": {}, "notes": []}
+        data.setdefault("kv", {})
+        data.setdefault("notes", [])
+        return data
     except (OSError, json.JSONDecodeError):
-        return default
+        return {"kv": {}, "notes": []}
 
 
-def _write_json(path: Path, data: Any) -> None:
+def _save(data: dict[str, Any]) -> None:
     ensure_data_dir()
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    # Windows-friendly replace
-    try:
-        tmp.replace(path)
-    except OSError:
-        if path.exists():
-            path.unlink(missing_ok=True)
-        tmp.rename(path)
+    p = _path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(p)
 
-
-# --- key/value memory -------------------------------------------------------
 
 def remember(key: str, value: str) -> None:
-    data = _read_json(memory_path(), {})
-    if not isinstance(data, dict):
-        data = {}
-    data[key.strip().lower()] = {"value": value, "ts": time.time()}
-    _write_json(memory_path(), data)
+    data = _load()
+    kv = data.setdefault("kv", {})
+    kv[key.strip().lower()] = {"value": value, "ts": time.time()}
+    while len(kv) > _MAX_KV:
+        oldest = min(kv.items(), key=lambda kv_i: float(kv_i[1].get("ts") or 0))
+        kv.pop(oldest[0], None)
+    _save(data)
 
 
 def recall(key: str) -> str | None:
-    data = _read_json(memory_path(), {})
-    if not isinstance(data, dict):
-        return None
-    item = data.get(key.strip().lower())
+    data = _load()
+    item = data.get("kv", {}).get(key.strip().lower())
     if isinstance(item, dict):
         return str(item.get("value", ""))
     if isinstance(item, str):
@@ -62,23 +62,32 @@ def recall(key: str) -> str | None:
 
 
 def forget(key: str) -> bool:
-    data = _read_json(memory_path(), {})
-    if not isinstance(data, dict):
-        return False
-    k = key.strip().lower()
-    if k in data:
-        del data[k]
-        _write_json(memory_path(), data)
+    data = _load()
+    kv = data.get("kv", {})
+    if key.strip().lower() in kv:
+        del kv[key.strip().lower()]
+        _save(data)
         return True
     return False
 
 
-def list_memory() -> dict[str, str]:
-    data = _read_json(memory_path(), {})
-    if not isinstance(data, dict):
-        return {}
+def note(text: str) -> None:
+    data = _load()
+    notes = data.setdefault("notes", [])
+    notes.append({"text": text.strip(), "ts": time.time()})
+    if len(notes) > _MAX_NOTES:
+        data["notes"] = notes[-_MAX_NOTES:]
+    _save(data)
+
+
+def list_notes(limit: int = 20) -> list[dict[str, Any]]:
+    notes = _load().get("notes") or []
+    return list(reversed(notes[-limit:]))
+
+
+def all_kv() -> dict[str, str]:
     out: dict[str, str] = {}
-    for k, v in data.items():
+    for k, v in (_load().get("kv") or {}).items():
         if isinstance(v, dict):
             out[k] = str(v.get("value", ""))
         else:
@@ -86,67 +95,18 @@ def list_memory() -> dict[str, str]:
     return out
 
 
-# --- notes ------------------------------------------------------------------
-
-def add_note(text: str) -> dict[str, Any]:
-    notes = _read_json(notes_path(), [])
-    if not isinstance(notes, list):
-        notes = []
-    note = {"id": int(time.time() * 1000) % 10_000_000, "text": text.strip(), "ts": time.time()}
-    notes.insert(0, note)
-    notes = notes[:200]
-    _write_json(notes_path(), notes)
-    return note
-
-
-def list_notes(limit: int = 20) -> list[dict[str, Any]]:
-    notes = _read_json(notes_path(), [])
-    if not isinstance(notes, list):
-        return []
-    return notes[:limit]
-
-
-def clear_notes() -> int:
-    notes = _read_json(notes_path(), [])
-    n = len(notes) if isinstance(notes, list) else 0
-    _write_json(notes_path(), [])
-    return n
-
-
-# --- chat history (append-only, capped) -------------------------------------
-
-def append_history(role: str, text: str, max_lines: int = 200) -> None:
-    ensure_data_dir()
-    path = history_path()
-    line = json.dumps({"ts": time.time(), "role": role, "text": text}, ensure_ascii=False)
-    try:
-        with path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except OSError:
-        return
-    try:
-        if path.stat().st_size > 200_000:
-            with path.open("r", encoding="utf-8") as f:
-                lines = f.readlines()[-max_lines:]
-            with path.open("w", encoding="utf-8") as f:
-                f.writelines(lines)
-    except OSError:
-        pass
-
-
-def recent_history(limit: int = 40) -> list[dict[str, Any]]:
-    path = history_path()
-    if not path.exists():
-        return []
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            lines = f.readlines()[-limit:]
-    except OSError:
-        return []
-    out: list[dict[str, Any]] = []
-    for line in lines:
-        try:
-            out.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return out
+def search_memory(query: str, limit: int = 8) -> list[str]:
+    q = query.lower().strip()
+    hits: list[str] = []
+    for k, v in all_kv().items():
+        if q in k or q in v.lower():
+            hits.append(f"{k} = {v}")
+        if len(hits) >= limit:
+            return hits
+    for n in list_notes(50):
+        t = n.get("text") or ""
+        if q in t.lower():
+            hits.append(f"note: {t}")
+        if len(hits) >= limit:
+            break
+    return hits

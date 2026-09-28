@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convenience launcher: python run_lito.py [--cli]"""
+"""Entry point for source runs and PyInstaller."""
 
 from lito.__main__ import main
 

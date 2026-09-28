@@ -4,17 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lito"
-version = "0.1.6"
-description = "Lightweight desktop AI assistant — open apps, do tasks, tiny RAM"
+version = "0.2.0"
+description = "Lightest thinking AI agent — multi-step reasoner, tools, tiny RAM, stdlib only"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Lito" }]
-keywords = ["assistant", "desktop", "ai", "low-memory"]
+keywords = ["assistant", "agent", "ai", "low-memory", "reasoning"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Environment :: Console",
-  "Topic :: Desktop Environment",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # Zero third-party runtime dependencies — stdlib only.
 dependencies = []

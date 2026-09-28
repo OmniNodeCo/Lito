@@ -1,154 +1,96 @@
 # Lito
 
-**Lightweight desktop AI** — open apps, run tasks, take notes. Uses **very little RAM** because it ships with a rule-based brain (no model weights in-process) and **zero third-party dependencies** (Python stdlib only).
+**Lightest thinking AI** — a real multi-step agent that plans, uses tools, and answers.  
+**Very low RAM** because it does **not** load model weights in-process (stdlib only, no torch/electron).
 
 ```
-RAM typically a few MB · no Electron · no torch · no browser bundle
+think → act (tools) → observe → answer
+RAM: a few MB · zero pip deps · optional external 1B model
 ```
+
+## Why this rewrite
+
+Older Lito was a large rule catalog. **0.2** replaces that with:
+
+1. **Local reasoner** — multi-step planner (classify → tool calls → synthesize)
+2. **Tools** — calc, shell, web search, fetch, memory, files, open…
+3. **Visible thinking** — short trace so you see *how* it decided
+4. **Optional neural core** — talk to Ollama / llama.cpp over HTTP; weights stay out of this process
 
 ## Quick start
 
 ```bash
-# from this repo
-python3 run_lito.py              # web UI on http://0.0.0.0:8765
-python3 run_lito.py --cli        # terminal only (lightest)
-python3 run_lito.py -c "help"    # one-shot command
-python3 -m lito --port 8765
+python3 run_lito.py              # UI → http://0.0.0.0:8765
+python3 run_lito.py --cli        # terminal REPL (lightest)
+python3 run_lito.py -c "what is MQTT"
+python3 run_lito.py -c "calculate 2^16 - 1"
 ```
 
-Optional install:
-
 ```bash
-pip install -e .    # provides the `lito` command
+pip install -e .
 lito --cli
 ```
 
-### Standalone executable
+### Optional: real LLM (still tiny RAM here)
 
 ```bash
-# local one-file binary (needs pyinstaller once)
-python3 scripts/build_exe.py
-# → dist/lito-<platform>
+# terminal 1 — any OpenAI-compatible server, e.g. Ollama
+ollama serve
+ollama pull llama3.2:1b
 
-# or via spec
-pip install pyinstaller
-pyinstaller lito.spec
-```
-
-CI builds Linux / Windows / macOS binaries on every green `Build` run (artifacts) and publishes them to **GitHub Releases** when you push a `v*` tag (see `.github/workflows/release.yml`).
-
-### Auto-update from GitHub Releases
-
-```bash
-lito --check-update
-lito --install-update
-# or in chat:
-#   check update
-#   install update
-```
-
-On startup Lito quietly probes `latest.json` from the newest release (`LITO_AUTO_UPDATE=0` to disable). Frozen executables can self-replace; source installs download the asset for manual swap / `pip install -U`.
-## What it can do
-
-| You say | Lito does |
-|--------|-----------|
-| `open firefox` / `launch code` | Starts the app (detached) |
-| `open https://example.com` | Opens URL in default browser |
-| `open ~/Documents` | Opens a folder |
-| `list apps` / `show all installed apps` | Full inventory + **last used** times |
-| `list apps by recent` / `by launches` | Sort by activity |
-| `when was firefox last used` | Last-used detail for one app |
-| `uninstall firefox` → `confirm uninstall firefox` | Safe uninstall (flatpak/snap/apt/brew/winget/registry) |
-| `uninstall firefox and cache` | Uninstall **and** delete that app’s user caches |
-| (Windows) suite apps | Resolves winget **Id** + registry; Kleopatra → Gpg4win |
-| `search web …` / `look up …` / `what is …` | Smart internet search (answers + links in chat) |
-| `list apps firefox` | Filter the inventory |
-| `refresh apps` | Rescan .desktop / Applications / Start Menu |
-| `find file report.pdf` | Filename search under your home |
-| `scan caches` | Maps caches → owner; shows **last used** + idle vs recent |
-| `clear unused caches` | Deletes caches for apps **not used recently** (default 7 days) |
-| `clear caches older than 30 days` | Custom keep window (also: `not used in 14 days`) |
-| `clear unused caches dry run` | Preview only — no deletes |
-| `clear cache for firefox` | Clears one owner (skips if running) |
-| `free up cache space` | Same as clear unused (voice-friendly) |
-| `note buy milk` / `show notes` | Local notes (`~/.lito/`) |
-| `remember wifi is secret` / `what is wifi` | Key/value memory |
-| `calc 22 * 7` | Safe arithmetic |
-| `run echo hello` | Shell (dangerous patterns blocked) |
-| `search web walrus operator` | Opens DuckDuckGo |
-| `set volume 40` | Volume (PulseAudio / macOS) |
-| `screenshot` | Saves a PNG if a tool exists |
-| `system info` / `how much ram` / `time` | Machine + self stats |
-| `check update` / `install update` | GitHub Releases auto-update |
-| `help` | Full command list |
-
-### Cache cleaner — how it decides
-
-1. **Discovers** known app caches (browsers, editors, chat, package managers) plus `~/.cache/*` and OS cache dirs.
-1b. **Last-used aware:** uses Lito launch history + OS signals. Apps used inside the keep window (default **7 days**) are marked *recent* and kept; only idle/orphaned caches are cleared.
-2. **Owns** each path (Firefox, Chrome, pip, APT, thumbnails, …).
-3. **Checks running processes** — if the owner is live, status = `in use` and Lito **will not delete**.
-4. **Orphaned** caches (app uninstalled, folder left behind) are safe to clear.
-5. **Protected** paths (home root, `.ssh`, `.lito`, …) are never removed.
-6. System scopes like `/var/cache/apt` need an explicit `including system` and still skip anything protected.
-
-```bash
-python3 run_lito.py -c "scan caches"
-python3 run_lito.py -c "clear unused caches dry run"
-python3 run_lito.py -c "clear unused caches"
-python3 run_lito.py -c "clear cache for pip"
-```
-
-## Why it’s low-RAM
-
-1. **No neural net loaded** — intents are regex/rules in a few KB of Python.
-2. **Stdlib only** — no PyTorch, no Electron, no Node UI framework.
-3. **Tiny local UI** — a few static files served by `http.server`.
-4. **Optional smarter chat** — point `LITO_LLM_URL` at Ollama/etc. so **weights stay in another process**; Lito only does HTTP.
-
-```bash
-# Example: use a local 1B model via Ollama without loading it into Lito
+# terminal 2
 export LITO_LLM_URL=http://127.0.0.1:11434/v1/chat/completions
 export LITO_LLM_MODEL=llama3.2:1b
-python3 run_lito.py
+python3 run_lito.py --cli
 ```
 
-Check footprint anytime: say **`how much ram`** in the chat.
+Hide thought traces: `LITO_SHOW_THOUGHTS=0` or `--hide-thoughts`.  
+Force pure local (ignore LLM): `LITO_FORCE_LOCAL=1`.
 
-## Config & data
+## What it can do
 
-| Path | Purpose |
-|------|---------|
-| `~/.lito/config.json` | host, port, safe_shell, optional llm_url |
-| `~/.lito/memory.json` | remembered facts |
-| `~/.lito/notes.json` | notes |
-| `~/.lito/history.jsonl` | chat log (capped) |
+| You say | What happens |
+|--------|----------------|
+| `what is photosynthesis` | Plans → web/wiki tools → extractive answer |
+| `calculate 17*19` / `2^10+5` | Safe AST calculator |
+| `remember wifi is orchard-5G` | Long-term KV memory |
+| `recall wifi` | Memory lookup |
+| `search web MQTT QoS` | Instant answers + links in chat |
+| `open https://example.com` | Opens URL |
+| `run echo hello` | Shell (dangerous patterns blocked) |
+| `read ~/notes.txt` | Read file / list dir |
+| `find file report.pdf` | Filename walk under home |
+| `note buy milk` / `list notes` | Scratch notes |
+| `sysinfo` / `time` | Local system facts |
+| `help` | Tools + examples |
 
-Override data dir: `export LITO_DATA=/path/to/dir`.
+## Architecture (kept tiny)
 
-Skip scanning `.desktop` files: `export LITO_NO_DESKTOP_SCAN=1`.
+```
+lito/
+  agent.py      # public Agent.handle()
+  reasoner.py   # LocalReasoner + optional LLMReasoner (ReAct-style)
+  tools.py      # all side effects
+  memory.py     # ~/.local/share/lito/memory.json
+  ui.py / cli.py
+```
 
-## CI
+No embedding DB, no browser engine, no CUDA. Memory is a small JSON file.
 
-GitHub Actions workflow: [`.github/workflows/build.yml`](.github/workflows/build.yml)
+## Standalone binary
 
-- Unit tests on Python 3.9 / 3.11 / 3.12 (Ubuntu) + macOS/Windows smoke
-- CLI one-shot smoke (`help`, `scan caches`, dry-run clean)
-- `python -m build` sdist/wheel + install check
-- `compileall` syntax gate
+```bash
+python3 scripts/build_exe.py
+# or: pyinstaller lito.spec
+```
+
+CI builds Linux / macOS / Windows on tag `v*`.
 
 ## Tests
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m unittest tests.test_cache -v
 ```
-
-## Platform notes
-
-- **Linux** — `xdg-open`, `.desktop` discovery, `pactl` volume.
-- **macOS** — `open -a`, `osascript` volume, `screencapture`.
-- **Windows** — basic app map (`explorer`, `notepad`, …); more can be added in `lito/apps.py`.
 
 ## License
 

@@ -1,56 +1,44 @@
-"""Terminal interface for Lito - even lighter than the web UI."""
+"""Terminal REPL — lightest interface."""
 
 from __future__ import annotations
 
 import sys
 
-from . import memory
-from .actions import lito_ram_usage, status_payload
-from .brain import Brain
+from . import __version__
+from .agent import Agent
 
 
-BANNER = r"""
-  _     _ _
- | |   (_) |_ ___
- | |   | | __/ _ \
- | |___| | || (_) |
- |_____|_|\__\___/   low-RAM desktop AI
-"""
+def run_cli(one_shot: str | None = None) -> int:
+    agent = Agent()
+    if one_shot is not None:
+        r = agent.handle(one_shot)
+        print(r.text)
+        return 0 if r.ok else 1
 
-
-def _c(code: str, text: str) -> str:
-    if not sys.stdout.isatty():
-        return text
-    return f"\033[{code}m{text}\033[0m"
-
-
-def run_cli() -> int:
-    brain = Brain()
-    print(_c("92", BANNER.strip()))
-    st = status_payload()
-    print(
-        _c("90", f"  RAM {st.get('ram_human') or '?'} - {st.get('apps_known', 0)} apps - type help - Ctrl+C quit")
-    )
-    print()
+    print(f"Lito {__version__} — thinking agent (tiny RAM). Type help · quit")
     while True:
         try:
-            line = input(_c("92", "you › ") + _c("0", ""))
+            line = input("you> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nbye.")
-            return 0
-        line = line.strip()
+            print()
+            break
         if not line:
             continue
-        if line.lower() in {"quit", "exit", ":q"}:
-            print("bye.")
-            return 0
-        reply = brain.handle(line)
-        memory.append_history("user", line)
-        memory.append_history("assistant", reply.text)
-        # Plain terminal: strip light markdown
-        text = reply.text.replace("**", "")
-        color = "91" if not reply.ok else "96"
-        print(_c(color, "lito ›"))
-        for row in text.splitlines() or [""]:
-            print(f"  {row}")
+        if line.lower() in {"quit", "exit", "q"}:
+            break
+        r = agent.handle(line)
         print()
+        print(r.text)
+        print()
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    one = None
+    if "-c" in argv:
+        i = argv.index("-c")
+        one = " ".join(argv[i + 1 :])
+    elif "--cli" in argv or "-i" in argv:
+        one = None
+    return run_cli(one)

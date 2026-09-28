@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for Lito — used by CI and local builds.
+# PyInstaller spec for Lito 0.2
 #   pyinstaller lito.spec
 
 import platform
@@ -33,15 +33,13 @@ a = Analysis(
     datas=[(str(static), "lito/static")],
     hiddenimports=[
         "lito",
-        "lito.brain",
-        "lito.actions",
-        "lito.apps",
-        "lito.cache",
-        "lito.update",
-        "lito.ui",
-        "lito.cli",
+        "lito.agent",
+        "lito.reasoner",
+        "lito.tools",
         "lito.memory",
         "lito.config",
+        "lito.ui",
+        "lito.cli",
         "lito.__main__",
     ],
     hookspath=[],

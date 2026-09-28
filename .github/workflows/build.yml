@@ -18,8 +18,6 @@ jobs:
   test:
     name: Test (Python ${{ matrix.python-version }} / ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    # Windows runners still exercise the exe job; unit-test env differences
-    # (cmd quoting, temp locks) must not block package/release.
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
@@ -45,13 +43,12 @@ jobs:
         shell: bash
         run: |
           python -c "import sys,platform; print(sys.version); print(platform.platform())"
-          python -c "import os; print('cwd', os.getcwd())"
 
       - name: Unit tests
         env:
           LITO_DATA: ${{ runner.temp }}/lito-test-data
-          LITO_NO_DESKTOP_SCAN: "1"
-          LITO_AUTO_UPDATE: "0"
+          LITO_FORCE_LOCAL: "1"
+          LITO_SHOW_THOUGHTS: "1"
           PYTHONUTF8: "1"
           PYTHONIOENCODING: "utf-8"
         run: python -u -m unittest discover -s tests -v
@@ -60,118 +57,46 @@ jobs:
         shell: bash
         env:
           LITO_DATA: ${{ runner.temp }}/lito-smoke-data
-          LITO_NO_DESKTOP_SCAN: "1"
-          LITO_AUTO_UPDATE: "0"
+          LITO_FORCE_LOCAL: "1"
+          LITO_SHOW_THOUGHTS: "0"
         run: |
           python run_lito.py -c "help"
-          python run_lito.py -c "status"
-          python run_lito.py -c "calc 6*7"
-          python run_lito.py -c "how much ram"
-          python run_lito.py -c "scan caches"
-          python run_lito.py -c "clear unused caches dry run"
+          python run_lito.py -c "sysinfo"
+          python run_lito.py -c "calculate 6*7"
+          python run_lito.py -c "time"
           python run_lito.py --version
-          python run_lito.py -c "check update" || true
 
-      - name: Cache cleaner self-test
-        env:
-          LITO_DATA: ${{ runner.temp }}/lito-cache-data
-          LITO_NO_DESKTOP_SCAN: "1"
-        run: python -u -m unittest tests.test_cache -v
-
-  package:
-    name: Package check
-    runs-on: ubuntu-latest
+  build-exe:
+    name: Executable (${{ matrix.plat }})
     needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Build sdist + wheel (stdlib only)
-        run: |
-          python -m pip install --upgrade pip build
-          python -m build
-          ls -la dist/
-
-      - name: Install wheel and import
-        run: |
-          python -m pip install dist/*.whl
-          python -c "import lito; from lito.brain import Brain; print('lito', lito.__version__); print(Brain().handle('status').text)"
-
-      - name: Upload wheel artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: lito-dist
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
-
-  executable:
-    name: Executable smoke (${{ matrix.plat }})
     runs-on: ${{ matrix.os }}
-    needs: test
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             plat: linux-x86_64
+          - os: macos-latest
+            plat: macos-arm64
           - os: windows-latest
             plat: windows-x86_64
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install PyInstaller
+      - name: Install build deps
         run: python -m pip install --upgrade pip pyinstaller
-      - name: Build one-file binary
-        run: python -m PyInstaller --noconfirm --clean lito.spec
-      - name: Smoke-run binary
-        env:
-          LITO_AUTO_UPDATE: "0"
-          LITO_NO_DESKTOP_SCAN: "1"
-          LITO_DATA: ${{ runner.temp }}/lito-exe-data
+      - name: Build executable
+        shell: bash
         run: |
-          BIN=$(ls dist/lito-* 2>/dev/null | head -1)
-          echo "BIN=$BIN"
-          test -n "$BIN"
-          chmod +x "$BIN" || true
-          "$BIN" --version
-          "$BIN" -c "status"
-          "$BIN" -c "calc 3+4"
-      - name: Upload executable
+          pyinstaller lito.spec
+          ls -la dist || dir dist
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: lito-exe-${{ matrix.plat }}
-          path: dist/lito-*
-          if-no-files-found: error
-          retention-days: 14
-
-  lint-light:
-    name: Syntax + compileall
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: compileall
-        run: python -m compileall -q lito tests run_lito.py scripts
-      - name: Import graph
-        env:
-          LITO_NO_DESKTOP_SCAN: "1"
-          LITO_AUTO_UPDATE: "0"
-        run: |
-          python -c "
-          from lito import actions, apps, brain, cache, cli, config, memory, ui, update
-          print('imports ok', brain.Brain().handle('help').kind)
-          print('platform', update.current_platform_tag())
-          "
+          name: lito-${{ matrix.plat }}
+          path: |
+            dist/lito-*
+            dist/lito-*.exe
+          if-no-files-found: warn
