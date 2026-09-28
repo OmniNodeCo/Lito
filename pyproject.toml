@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lito"
-version = "0.2.0"
-description = "Lightest thinking AI agent — multi-step reasoner, tools, tiny RAM, stdlib only"
+version = "0.3.0"
+description = "Lightest thinking AI — custom micro-LLM (Lito-Nano) + tools, tiny RAM, stdlib only"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
@@ -30,4 +30,4 @@ build = ["pyinstaller>=6.0", "build"]
 include = ["lito*"]
 
 [tool.setuptools.package-data]
-lito = ["static/*"]
+lito = ["static/*", "nano/weights/*"]

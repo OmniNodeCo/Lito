@@ -1,90 +1,94 @@
 # Lito
 
-**Lightest thinking AI** — a real multi-step agent that plans, uses tools, and answers.  
-**Very low RAM** because it does **not** load model weights in-process (stdlib only, no torch/electron).
+**Custom micro-LLM agent** — a real neural brain that stays tiny.
 
 ```
-think → act (tools) → observe → answer
-RAM: a few MB · zero pip deps · optional external 1B model
+Lito-Nano  ≈ 60k weights  ·  pure Python  ·  no torch/numpy  ·  a few MB RAM
 ```
 
-## Why this rewrite
+Not a wrapper around someone else's giant model. **Lito-Nano** is trained
+*for this agent*: intent routing + generative polish + tools.
 
-Older Lito was a large rule catalog. **0.2** replaces that with:
+## Neural stack
 
-1. **Local reasoner** — multi-step planner (classify → tool calls → synthesize)
-2. **Tools** — calc, shell, web search, fetch, memory, files, open…
-3. **Visible thinking** — short trace so you see *how* it decided
-4. **Optional neural core** — talk to Ollama / llama.cpp over HTTP; weights stay out of this process
+| Piece | Role | Size |
+|-------|------|------|
+| **IntentNet** | Supervised MLP — picks tool/intent | ~13k weights |
+| **NanoLM** | Tiny generative LM — chat / polish | ~47k weights |
+| **Tools** | calc, search, memory, shell, files… | code only |
+| **LocalReasoner** | Deterministic fallback | code only |
+| Optional `LITO_LLM_URL` | External Ollama / llama.cpp | out-of-process |
+
+IntentNet hits **~99%** tool routing on its curriculum. Tools supply
+**ground truth** (math, search, memory) so the tiny net never has to
+memorize the world.
 
 ## Quick start
 
 ```bash
-python3 run_lito.py              # UI → http://0.0.0.0:8765
-python3 run_lito.py --cli        # terminal REPL (lightest)
+python3 run_lito.py              # UI http://0.0.0.0:8765
+python3 run_lito.py --cli
+python3 run_lito.py -c "calculate 6*7"
 python3 run_lito.py -c "what is MQTT"
-python3 run_lito.py -c "calculate 2^16 - 1"
+python3 run_lito.py -c "remember wifi is home"
 ```
 
+### Retrain the custom brain
+
 ```bash
-pip install -e .
-lito --cli
+# intent router (seconds)
+python3 -c "from pathlib import Path; from lito.nano.intent import train_intent; train_intent(out=Path('lito/nano/weights/lito-intent.bin'))"
+
+# generative micro-LM (minutes, optional polish)
+python3 -m lito.nano.train --steps 900 --dim 32 --hidden 64
 ```
 
-### Optional: real LLM (still tiny RAM here)
+Weights live in `lito/nano/weights/` and ship with the repo.
+
+### Optional external LLM
 
 ```bash
-# terminal 1 — any OpenAI-compatible server, e.g. Ollama
-ollama serve
-ollama pull llama3.2:1b
-
-# terminal 2
 export LITO_LLM_URL=http://127.0.0.1:11434/v1/chat/completions
 export LITO_LLM_MODEL=llama3.2:1b
-python3 run_lito.py --cli
+export LITO_PREFER_EXTERNAL=1
 ```
 
-Hide thought traces: `LITO_SHOW_THOUGHTS=0` or `--hide-thoughts`.  
-Force pure local (ignore LLM): `LITO_FORCE_LOCAL=1`.
+Force non-neural path: `LITO_FORCE_LOCAL=1`.
 
-## What it can do
+## Examples
 
-| You say | What happens |
-|--------|----------------|
-| `what is photosynthesis` | Plans → web/wiki tools → extractive answer |
-| `calculate 17*19` / `2^10+5` | Safe AST calculator |
-| `remember wifi is orchard-5G` | Long-term KV memory |
-| `recall wifi` | Memory lookup |
-| `search web MQTT QoS` | Instant answers + links in chat |
-| `open https://example.com` | Opens URL |
-| `run echo hello` | Shell (dangerous patterns blocked) |
-| `read ~/notes.txt` | Read file / list dir |
-| `find file report.pdf` | Filename walk under home |
-| `note buy milk` / `list notes` | Scratch notes |
-| `sysinfo` / `time` | Local system facts |
-| `help` | Tools + examples |
+| You | Lito-Nano |
+|-----|-----------|
+| `hello` | neural chat |
+| `calculate 2^10` | intent→calc tool → **1024** |
+| `what is photosynthesis` | intent→search → grounded answer |
+| `remember project is lito` | intent→memory write |
+| `recall project` | intent→memory read |
+| `help` | branded capabilities |
 
-## Architecture (kept tiny)
+Every reply can show a **thinking** trace: intent probs + tool calls.
+
+## Layout
 
 ```
 lito/
-  agent.py      # public Agent.handle()
-  reasoner.py   # LocalReasoner + optional LLMReasoner (ReAct-style)
-  tools.py      # all side effects
-  memory.py     # ~/.local/share/lito/memory.json
-  ui.py / cli.py
+  agent.py           # Agent.handle()
+  nano/
+    intent.py        # IntentNet (the sharp router)
+    model.py         # NanoLM (micro generator)
+    train.py         # LM trainer
+    curriculum.py    # agent-aligned data
+    reason.py        # wires neural + tools
+    weights/         # *.bin shipped weights
+  tools.py reasoner.py memory.py ui.py cli.py
 ```
 
-No embedding DB, no browser engine, no CUDA. Memory is a small JSON file.
+## Why this is “tiniest but smart”
 
-## Standalone binary
-
-```bash
-python3 scripts/build_exe.py
-# or: pyinstaller lito.spec
-```
-
-CI builds Linux / macOS / Windows on tag `v*`.
+1. **Custom** — trained on *agent* traces, not generic web text  
+2. **Tiny** — tens of thousands of weights, not billions  
+3. **Honest** — tools do math/search; the net decides *what* to do  
+4. **Stdlib** — zero runtime pip deps; runs anywhere Python does  
 
 ## Tests
 

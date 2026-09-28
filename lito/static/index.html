@@ -3,27 +3,26 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Lito — thinking agent</title>
+  <title>Lito-Nano — custom micro LLM</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <div class="wrap">
     <header>
-      <h1>Lito</h1>
-      <p class="tag">lightest thinking AI · tiny RAM · tools + multi-step reasoner</p>
+      <h1>Lito-Nano</h1>
+      <p class="tag">custom micro-LLM · ~60k weights · neural intent + tools · tiny RAM</p>
     </header>
     <div id="log" class="log" aria-live="polite"></div>
     <form id="f" class="bar">
-      <input id="q" type="text" autocomplete="off" placeholder="Ask anything — I'll think, then act…" autofocus />
+      <input id="q" type="text" autocomplete="off" placeholder="Ask the nano brain…" autofocus />
       <button type="submit">Send</button>
     </form>
     <div class="chips">
       <button type="button" data-q="help">help</button>
+      <button type="button" data-q="calculate 2^10">calc 2^10</button>
       <button type="button" data-q="what is photosynthesis">think: photosynthesis</button>
-      <button type="button" data-q="calculate 2^16 - 1">calc</button>
-      <button type="button" data-q="sysinfo">sysinfo</button>
-      <button type="button" data-q="search web MQTT QoS">web search</button>
       <button type="button" data-q="remember project is lito">remember</button>
+      <button type="button" data-q="sysinfo">sysinfo</button>
     </div>
   </div>
   <script src="/app.js"></script>

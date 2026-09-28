@@ -1,0 +1,1 @@
+{"params":47417,"vocab":345,"dim":32,"hidden":64,"steps":900,"name":"Lito-Nano","arch":"ctx-MLP","desc":"custom micro LLM agent brain"}

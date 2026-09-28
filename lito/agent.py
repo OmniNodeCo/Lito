@@ -1,4 +1,4 @@
-"""Public Agent API — one object, low RAM, actually thinks."""
+"""Public Agent API — custom Lito-Nano neural stack + tools."""
 
 from __future__ import annotations
 
@@ -21,10 +21,14 @@ class Reply:
 
 
 class Agent:
-    """Lightest thinking AI.
+    """Lightest smart agent with a **custom** micro neural brain.
 
-    - Default: local multi-step reasoner + tools (no model weights).
-    - Optional: LITO_LLM_URL for a real LLM kept out-of-process.
+    Stack (all pure Python, no torch/numpy):
+      • IntentNet  — supervised intent classifier (tool routing)
+      • NanoLM     — tiny generative LM (chat / polish)
+      • Tools      — calc, search, memory, shell, …
+      • LocalReasoner fallback
+      • Optional LITO_LLM_URL external model
     """
 
     def __init__(self) -> None:
@@ -32,28 +36,36 @@ class Agent:
         self.local = LocalReasoner(self.tools)
         self.llm = LLMReasoner(self.tools)
         self.show_thoughts = os.environ.get("LITO_SHOW_THOUGHTS", "1") != "0"
-        # Prefer LLM when configured unless forced local
-        self.prefer_llm = os.environ.get("LITO_FORCE_LOCAL", "") != "1"
+        self.force_local = os.environ.get("LITO_FORCE_LOCAL", "") == "1"
+        self.prefer_external = os.environ.get("LITO_PREFER_EXTERNAL", "") == "1"
+
+        self.nano = None
+        self.intent = None
+        self.nano_reasoner = None
+
+        if not self.force_local:
+            try:
+                from .nano.runtime import try_load_brain, try_load_intent
+                from .nano.reason import NanoReasoner
+
+                self.intent = try_load_intent()
+                self.nano = try_load_brain()
+                if self.intent is not None or self.nano is not None:
+                    self.nano_reasoner = NanoReasoner(
+                        self.tools, intent=self.intent, brain=self.nano
+                    )
+            except Exception:
+                self.nano_reasoner = None
 
     def handle(self, text: str) -> Reply:
         text = (text or "").strip()
-        if self.prefer_llm and self.llm.available():
-            # Fast local shortcuts still win for math/open/memory (cheaper)
-            if self._local_fastpath(text):
+        if self.prefer_external and self.llm.available() and not self.force_local:
+            trace = self.llm.think(text)
+        elif self.nano_reasoner is not None and not self.force_local:
+            try:
+                trace = self.nano_reasoner.think(text)
+            except Exception:
                 trace = self.local.think(text)
-            else:
-                trace = self.llm.think(text)
         else:
             trace = self.local.think(text)
-        out = trace.format(show_thoughts=self.show_thoughts)
-        return Reply(text=out, ok=True, trace=trace)
-
-    def _local_fastpath(self, text: str) -> bool:
-        low = text.lower()
-        if low in {"help", "hi", "hello", "hey", "time", "date", "sysinfo", "status"}:
-            return True
-        if low.startswith(
-            ("remember ", "note ", "recall ", "open ", "run ", "shell ", "calc ")
-        ):
-            return True
-        return False
+        return Reply(text=trace.format(show_thoughts=self.show_thoughts), ok=True, trace=trace)
