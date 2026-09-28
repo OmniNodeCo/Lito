@@ -202,24 +202,15 @@ def tool_remember(key: str, value: str) -> str:
 
 
 def tool_recall(key: str) -> str:
+    key = (key or "").strip()
     v = mem.recall(key)
     if v is not None:
         return f"{key} = {v}"
-    # soft match: whole-token only (avoid pet⊂project)
+    # exact key only (case-insensitive already in memory)
     allk = mem.all_kv()
-    key_l = key.strip().lower()
-    tokens = set(key_l.replace("-", " ").split())
-    best = None
-    for k, val in allk.items():
-        if key_l == k:
-            return f"{k} = {val}"
-        kt = set(k.replace("-", " ").split())
-        if tokens and tokens == kt:
-            return f"{k} = {val}"
-        if tokens and tokens < kt or kt < tokens:
-            best = (k, val)
-    if best:
-        return f"{best[0]} = {best[1]}"
+    key_l = key.lower()
+    if key_l in allk:
+        return f"{key_l} = {allk[key_l]}"
     return f"nothing stored for '{key}'"
 
 
