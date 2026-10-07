@@ -1,0 +1,48 @@
+# SmartAI Build Configuration
+# ===========================
+
+# Application name
+name: SmartAI
+
+# Main entry point
+entry_point: main.py
+
+# Build as single executable
+onefile: true
+
+# Console application (set to false for GUI)
+console: true
+
+# Icon file (optional, .ico for Windows)
+# icon: assets/icon.ico
+
+# Additional data directories to include
+extra_data: [checkpoints, src]
+
+# Hidden imports that PyInstaller might miss
+hidden_imports: [numpy, json, re, os, sys, time, argparse]
+
+# Platform-specific settings
+# windows:
+#   uac_admin: false
+#   version_file: version.txt
+
+# Optimization
+# strip: true
+# upx: true
+
+# Build output directory
+dist_dir: dist
+build_dir: build_temp
+
+# Training configuration (used by CI/CD)
+training:
+  epochs: 30
+  batch_size: 4
+  seq_len: 64
+  d_model: 128
+  n_layers: 4
+  n_heads: 4
+  d_ff: 512
+  vocab_size: 2048
+  learning_rate: 0.0003
