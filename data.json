@@ -1,0 +1,40 @@
+{
+    "greeting": {
+        "keywords": ["hello", "hi", "hey", "sup", "yo", "good morning", "good evening"],
+        "replies": [
+            "Hey there!",
+            "Hi! How's it going?",
+            "Hello! What can I help you with?"
+        ]
+    },
+    "goodbye": {
+        "keywords": ["bye", "goodbye", "see you", "later", "gotta go", "exit", "quit"],
+        "replies": [
+            "See ya!",
+            "Bye bye!",
+            "Catch you later!"
+        ]
+    },
+    "thanks": {
+        "keywords": ["thanks", "thank you", "thx", "appreciate it"],
+        "replies": [
+            "No problem at all!",
+            "You're welcome!",
+            "Anytime!"
+        ]
+    },
+    "identity": {
+        "keywords": ["who are you", "what is your name", "your name"],
+        "replies": [
+            "I'm Lito, your Python bot assistant!",
+            "My name is Lito."
+        ]
+    },
+    "status": {
+        "keywords": ["how are you", "hows it going", "how are things"],
+        "replies": [
+            "I'm running smoothly, thanks for asking!",
+            "Doing great! Ready to chat."
+        ]
+    }
+}
