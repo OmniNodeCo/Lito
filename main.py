@@ -6,9 +6,10 @@ import sqlite3
 import sys
 from datetime import datetime
 
+import joblib
 
 # ──────────────────────────────────────────────
-# PATH HELPER (for PyInstaller compatibility)
+# PATH HELPER (PyInstaller compatibility)
 # ──────────────────────────────────────────────
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and PyInstaller."""
@@ -22,37 +23,34 @@ def resource_path(relative_path):
 # ──────────────────────────────────────────────
 # DATABASE SETUP
 # ──────────────────────────────────────────────
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lito_memory.db")
+DB_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "lito_memory.db"
+)
 
 
-def get_db_connection():
-    """Create and return a database connection."""
+def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def init_db():
-    """Create all database tables if they don't exist."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    cursor.executescript("""
+    conn = get_db()
+    conn.executescript("""
         CREATE TABLE IF NOT EXISTS conversations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_input TEXT NOT NULL,
             bot_reply TEXT NOT NULL,
+            intent TEXT,
+            confidence REAL,
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-
-        CREATE TABLE IF NOT EXISTS learned_responses (
+        CREATE TABLE IF NOT EXISTS learned_examples (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            keyword TEXT NOT NULL UNIQUE,
-            reply TEXT NOT NULL,
-            times_used INTEGER DEFAULT 0,
+            sentence TEXT NOT NULL,
+            intent TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-
         CREATE TABLE IF NOT EXISTS user_profile (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             key TEXT NOT NULL UNIQUE,
@@ -60,7 +58,6 @@ def init_db():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
-
     conn.commit()
     conn.close()
 
@@ -68,26 +65,22 @@ def init_db():
 # ──────────────────────────────────────────────
 # DATABASE OPERATIONS
 # ──────────────────────────────────────────────
-def log_conversation(user_input, bot_reply):
-    """Save a conversation exchange to the database."""
-    conn = get_db_connection()
+def log_conversation(user_input, bot_reply, intent=None, confidence=0.0):
+    conn = get_db()
     conn.execute(
-        "INSERT INTO conversations (user_input, bot_reply) VALUES (?, ?)",
-        (user_input, bot_reply),
+        "INSERT INTO conversations (user_input, bot_reply, intent, confidence) VALUES (?, ?, ?, ?)",
+        (user_input, bot_reply, intent, confidence),
     )
     conn.commit()
     conn.close()
 
 
 def save_user_data(key, value):
-    """Save or update a user profile entry (name, favorites, etc.)."""
-    conn = get_db_connection()
+    conn = get_db()
     conn.execute(
-        """
-        INSERT INTO user_profile (key, value, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-        """,
+        """INSERT INTO user_profile (key, value, updated_at)
+           VALUES (?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP""",
         (key, value),
     )
     conn.commit()
@@ -95,172 +88,207 @@ def save_user_data(key, value):
 
 
 def get_user_data(key):
-    """Retrieve a user profile value by key."""
-    conn = get_db_connection()
-    row = conn.execute(
-        "SELECT value FROM user_profile WHERE key = ?", (key,)
-    ).fetchone()
+    conn = get_db()
+    row = conn.execute("SELECT value FROM user_profile WHERE key=?", (key,)).fetchone()
     conn.close()
     return row["value"] if row else None
 
 
-def save_learned_response(keyword, reply):
-    """Save a user-taught response to the database."""
-    conn = get_db_connection()
-    try:
-        conn.execute(
-            """
-            INSERT INTO learned_responses (keyword, reply)
-            VALUES (?, ?)
-            ON CONFLICT(keyword) DO UPDATE SET reply = excluded.reply
-            """,
-            (keyword.lower().strip(), reply),
-        )
-        conn.commit()
-    except Exception:
-        pass
+def save_learned_example(sentence, intent):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO learned_examples (sentence, intent) VALUES (?, ?)",
+        (sentence.lower().strip(), intent),
+    )
+    conn.commit()
     conn.close()
 
 
-def get_learned_response(user_input):
-    """Check if any learned keyword matches the user input."""
-    conn = get_db_connection()
-    rows = conn.execute("SELECT keyword, reply FROM learned_responses").fetchall()
+def get_all_learned_examples():
+    conn = get_db()
+    rows = conn.execute("SELECT sentence, intent FROM learned_examples").fetchall()
     conn.close()
-
-    cleaned = clean_text(user_input)
-    for row in rows:
-        pattern = rf"\b{re.escape(clean_text(row['keyword']))}\b"
-        if re.search(pattern, cleaned):
-            # Increment usage counter
-            conn = get_db_connection()
-            conn.execute(
-                "UPDATE learned_responses SET times_used = times_used + 1 WHERE keyword = ?",
-                (row["keyword"],),
-            )
-            conn.commit()
-            conn.close()
-            return row["reply"]
-    return None
+    return [(r["sentence"], r["intent"]) for r in rows]
 
 
-def get_conversation_stats():
-    """Return stats about conversations and memory."""
-    conn = get_db_connection()
+def get_stats():
+    conn = get_db()
     total_msgs = conn.execute("SELECT COUNT(*) as c FROM conversations").fetchone()["c"]
-    total_learned = conn.execute(
-        "SELECT COUNT(*) as c FROM learned_responses"
-    ).fetchone()["c"]
-    user_name = get_user_data("name")
+    total_learned = conn.execute("SELECT COUNT(*) as c FROM learned_examples").fetchone()["c"]
     conn.close()
+    user_name = get_user_data("name")
     return total_msgs, total_learned, user_name
 
 
 # ──────────────────────────────────────────────
-# JSON BRAIN LOADER
+# MODEL LOADING
 # ──────────────────────────────────────────────
-def load_brain(filename="data.json"):
-    """Load the JSON brain file."""
-    file_path = resource_path(filename)
-    if not os.path.exists(file_path):
-        print(f"Error: '{filename}' not found at {file_path}")
+def load_model(filename="lito_model.pkl"):
+    path = resource_path(filename)
+    if not os.path.exists(path):
+        print(f"Error: Model file '{filename}' not found!")
+        print("Run 'python train.py' first to create the model.")
         input("Press Enter to exit...")
         sys.exit(1)
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"Error reading {filename}: {e}")
+    return joblib.load(path)
+
+
+def load_responses(filename="responses.json"):
+    path = resource_path(filename)
+    if not os.path.exists(path):
+        print(f"Error: '{filename}' not found!")
         input("Press Enter to exit...")
         sys.exit(1)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 # ──────────────────────────────────────────────
-# TEXT CLEANING
+# CLASSIFICATION
 # ──────────────────────────────────────────────
-def clean_text(text):
-    """Lowercase and remove punctuation."""
-    text = text.lower().strip()
-    return re.sub(r"[^\w\s]", "", text)
+CONFIDENCE_THRESHOLD = 0.25  # Below this = bot doesn't understand
+
+
+def classify(model, text):
+    """
+    Classify user input using the trained model.
+    Returns (intent, confidence_score).
+    """
+    cleaned = text.lower().strip()
+    if not cleaned:
+        return "fallback", 0.0
+
+    # Get probability scores for all intents
+    probabilities = model.predict_proba([cleaned])[0]
+    classes = model.classes_
+
+    # Find the highest scoring intent
+    best_index = probabilities.argmax()
+    best_intent = classes[best_index]
+    best_confidence = probabilities[best_index]
+
+    # If confidence is too low, treat as fallback
+    if best_confidence < CONFIDENCE_THRESHOLD:
+        return "fallback", best_confidence
+
+    return best_intent, best_confidence
+
+
+def get_reply(intent, responses):
+    """Pick a random reply for the given intent."""
+    replies = responses.get(intent, responses.get("fallback", ["..."]))
+    return random.choice(replies)
 
 
 # ──────────────────────────────────────────────
 # NAME DETECTION
 # ──────────────────────────────────────────────
-def detect_name(user_input):
-    """Try to extract a name from phrases like 'my name is X'."""
+def detect_name(text):
     patterns = [
         r"my name is (\w+)",
         r"call me (\w+)",
         r"i am (\w+)",
         r"i'm (\w+)",
-        r"i'm called (\w+)",
         r"im called (\w+)",
         r"you can call me (\w+)",
     ]
-    cleaned = clean_text(user_input)
+    cleaned = text.lower().strip()
     for pattern in patterns:
         match = re.search(pattern, cleaned)
         if match:
             name = match.group(1).capitalize()
-            # Filter out common false positives
-            if name.lower() not in ["a", "the", "an", "not", "so", "just", "really", "very", "doing", "feeling", "going"]:
+            skip = {"a", "the", "an", "not", "so", "just", "really",
+                    "very", "doing", "feeling", "going", "sorry", "fine"}
+            if name.lower() not in skip:
                 return name
     return None
 
 
 # ──────────────────────────────────────────────
-# RESPONSE ENGINE
+# RETRAINING (when user teaches new examples)
 # ──────────────────────────────────────────────
-def get_lito_response(user_text, brain):
-    cleaned_input = clean_text(user_text)
+def retrain_model(model, output_file="lito_model.pkl"):
+    """
+    Retrain the model with original data + user-taught examples.
+    Takes < 1 second even with thousands of examples.
+    """
+    from training_data import TRAINING_DATA
 
-    # 1. Check learned (DB) responses FIRST (user-taught stuff takes priority)
-    learned_reply = get_learned_response(user_text)
-    if learned_reply:
-        return learned_reply
+    sentences = []
+    labels = []
 
-    # 2. Check JSON brain
-    for category_name, content in brain.items():
-        for keyword in content.get("keywords", []):
-            clean_keyword = clean_text(keyword)
-            pattern = rf"\b{re.escape(clean_keyword)}\b"
-            if re.search(pattern, cleaned_input):
-                replies = content.get("replies", [])
-                if replies:
-                    return random.choice(replies)
+    # Original training data
+    for intent, examples in TRAINING_DATA.items():
+        for example in examples:
+            sentences.append(example.lower())
+            labels.append(intent)
 
-    # 3. Fallback
-    return "I'm not quite sure how to respond to that. Want to teach me what to say? (type 'teach me')"
+    # User-taught examples from the database
+    learned = get_all_learned_examples()
+    for sentence, intent in learned:
+        sentences.append(sentence)
+        labels.append(intent)
+
+    # Retrain (the pipeline handles TF-IDF + classifier together)
+    model.fit(sentences, labels)
+
+    # Save the updated model
+    # When running as .exe, save next to the exe, not inside it
+    save_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), output_file
+    )
+    joblib.dump(model, save_path)
+    print(f"  Model retrained on {len(sentences)} examples.")
 
 
 # ──────────────────────────────────────────────
 # TEACHING MODE
 # ──────────────────────────────────────────────
-def teach_mode():
-    """Interactive mode where the user teaches the bot a new response."""
+def teach_mode(model, responses):
+    """Let the user teach the bot a new intent + example."""
     print("\n📚 TEACHING MODE")
-    keyword = input("  What keyword or phrase should I listen for? ").strip()
-    if not keyword:
+    print("  Available intents:", ", ".join(sorted(responses.keys())))
+    print()
+
+    sentence = input("  Type an example sentence to teach me: ").strip()
+    if not sentence:
         print("  Cancelled.")
         return
-    reply = input(f"  What should I say when someone says '{keyword}'? ").strip()
-    if not reply:
+
+    intent = input("  What intent/category is this? (e.g. greeting, joke): ").strip().lower()
+    if not intent:
         print("  Cancelled.")
         return
-    save_learned_response(keyword, reply)
-    print(f"  ✅ Got it! I'll say '{reply}' when I hear '{keyword}'.")
+
+    # Check if we have replies for this intent
+    if intent not in responses:
+        reply = input(f"  I don't have replies for '{intent}' yet. What should I say? ").strip()
+        if reply:
+            responses[intent] = [reply]
+            # Save updated responses to file
+            save_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "responses.json"
+            )
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(responses, f, indent=4)
+
+    # Save the example to the database
+    save_learned_example(sentence, intent)
+
+    # Retrain the model with the new data
+    retrain_model(model)
+
+    print(f"  ✅ Learned! When you say something like '{sentence}', I'll classify it as '{intent}'.")
 
 
 # ──────────────────────────────────────────────
 # MAIN LOOP
 # ──────────────────────────────────────────────
 def main():
-    # Initialize everything
     init_db()
-    brain = load_brain("data.json")
+    model = load_model("lito_model.pkl")
+    responses = load_responses("responses.json")
 
-    # Check if we know the user
     user_name = get_user_data("name")
 
     print("=" * 50)
@@ -268,59 +296,62 @@ def main():
         print(f"🤖 Welcome back, {user_name}! Lito is online.")
     else:
         print("🤖 Lito is online! Type 'exit' to quit.")
-    print("   Type 'help' for commands | 'stats' for memory info")
+    print("   Powered by a trained Naive Bayes model")
+    print("   Type 'help' for info | 'stats' for memory | 'teach' to train me")
     print("=" * 50)
 
     while True:
         try:
-            prompt = f"\n{user_name or 'You'}: " if user_name else "\nYou: "
+            prompt = f"\n{user_name or 'You'}: "
             user_input = input(prompt).strip()
         except (KeyboardInterrupt, EOFError):
-            reply = "\nLito: Catch you later!"
-            print(reply)
-            log_conversation("[EXIT]", reply)
+            print("\nLito: Catch you later!")
             break
 
         if not user_input:
             continue
 
         if user_input.lower() in ["exit", "quit"]:
-            reply = "Lito: Catch you later!"
-            print(reply)
-            log_conversation(user_input, reply)
+            reply = "Catch you later!"
+            print(f"Lito: {reply}")
+            log_conversation(user_input, reply, "goodbye", 1.0)
             break
 
-        # Special command: teach mode
-        if user_input.lower() in ["teach me", "teach", "learn this"]:
-            teach_mode()
+        # Special command: teach
+        if user_input.lower() in ["teach", "teach me", "train you", "learn this"]:
+            teach_mode(model, responses)
             continue
 
         # Special command: stats
         if user_input.lower() in ["stats", "statistics", "memory"]:
-            total_msgs, total_learned, name = get_conversation_stats()
+            total_msgs, total_learned, name = get_stats()
             print(f"\n📊 Lito's Memory Stats:")
-            print(f"   Total messages logged: {total_msgs}")
-            print(f"   Things you taught me:  {total_learned}")
-            print(f"   Your name:             {name or 'Unknown'}")
-            print(f"   Database location:     {DB_PATH}")
+            print(f"   Total messages logged:  {total_msgs}")
+            print(f"   Examples you taught me: {total_learned}")
+            print(f"   Your name:              {name or 'Unknown'}")
+            print(f"   Model type:             Naive Bayes + TF-IDF")
+            print(f"   Database:               {DB_PATH}")
             continue
 
-        # Check if user is telling us their name
+        # Check for name
         detected_name = detect_name(user_input)
         if detected_name:
             save_user_data("name", detected_name)
             user_name = detected_name
             reply = f"Nice to meet you, {user_name}! I'll remember that."
             print(f"Lito: {reply}")
-            log_conversation(user_input, reply)
+            log_conversation(user_input, reply, "name_tell", 1.0)
             continue
 
-        # Normal response
-        reply = get_lito_response(user_input, brain)
-        print(f"Lito: {reply}")
+        # Classify using the trained model
+        intent, confidence = classify(model, user_input)
+        reply = get_reply(intent, responses)
 
-        # Log to database
-        log_conversation(user_input, reply)
+        # Show confidence in debug mode (optional, remove for cleaner output)
+        # print(f"  [debug: {intent} @ {confidence:.0%}]")
+
+        print(f"Lito: {reply}")
+        log_conversation(user_input, reply, intent, confidence)
 
 
 if __name__ == "__main__":
