@@ -7,6 +7,23 @@ import numpy as np
 from typing import List, Optional, Tuple, Union
 
 
+def _reduce_grad(grad: np.ndarray, target_shape: Tuple[int, ...]) -> np.ndarray:
+    """Reduce gradient dimensions to match target parameter shape."""
+    if grad.shape == target_shape:
+        return grad
+
+    # Sum out leading dimensions if grad has more dimensions than target
+    while len(grad.shape) > len(target_shape):
+        grad = np.sum(grad, axis=0)
+
+    # Sum along dimensions where target shape is 1
+    for i, (ts, gs) in enumerate(zip(target_shape, grad.shape)):
+        if ts == 1 and gs != 1:
+            grad = np.sum(grad, axis=i, keepdims=True)
+
+    return grad.reshape(target_shape)
+
+
 class Tensor:
     """A tensor with automatic differentiation support."""
 
@@ -35,14 +52,16 @@ class Tensor:
     def T(self):
         out = Tensor(self.data.T, requires_grad=self.requires_grad, _children=(self,), _op='transpose')
         def _backward():
-            self.grad += out.grad.T
+            if self.requires_grad:
+                self.grad += out.grad.T
         out._backward = _backward
         return out
 
     def reshape(self, *shape):
         out = Tensor(self.data.reshape(*shape), requires_grad=self.requires_grad, _children=(self,), _op='reshape')
         def _backward():
-            self.grad += out.grad.reshape(self.data.shape)
+            if self.requires_grad:
+                self.grad += out.grad.reshape(self.data.shape)
         out._backward = _backward
         return out
 
@@ -50,13 +69,14 @@ class Tensor:
         out = Tensor(np.sum(self.data, axis=axis, keepdims=keepdims),
                      requires_grad=self.requires_grad, _children=(self,), _op='sum')
         def _backward():
-            if axis is None:
-                self.grad += np.ones_like(self.data) * out.grad
-            else:
-                grad = out.grad
-                if not keepdims:
-                    grad = np.expand_dims(grad, axis=axis)
-                self.grad += np.ones_like(self.data) * grad
+            if self.requires_grad:
+                if axis is None:
+                    self.grad += np.ones_like(self.data) * out.grad
+                else:
+                    grad = out.grad
+                    if not keepdims:
+                        grad = np.expand_dims(grad, axis=axis)
+                    self.grad += np.ones_like(self.data) * grad
         out._backward = _backward
         return out
 
@@ -65,13 +85,14 @@ class Tensor:
         out = Tensor(np.mean(self.data, axis=axis, keepdims=keepdims),
                      requires_grad=self.requires_grad, _children=(self,), _op='mean')
         def _backward():
-            if axis is None:
-                self.grad += np.ones_like(self.data) * out.grad / n
-            else:
-                grad = out.grad
-                if not keepdims:
-                    grad = np.expand_dims(grad, axis=axis)
-                self.grad += np.ones_like(self.data) * grad / n
+            if self.requires_grad:
+                if axis is None:
+                    self.grad += np.ones_like(self.data) * out.grad / n
+                else:
+                    grad = out.grad
+                    if not keepdims:
+                        grad = np.expand_dims(grad, axis=axis)
+                    self.grad += np.ones_like(self.data) * grad / n
         out._backward = _backward
         return out
 
@@ -80,25 +101,10 @@ class Tensor:
         out = Tensor(self.data + other.data, requires_grad=self.requires_grad or other.requires_grad,
                      _children=(self, other), _op='+')
         def _backward():
-            g = out.grad
-            # Handle broadcasting
-            self_grad = g
-            other_grad = g
-            # Reduce along broadcast dimensions
-            while len(self_grad.shape) > len(self.data.shape):
-                self_grad = self_grad.sum(axis=0)
-            for i, (s, gs) in enumerate(zip(self.data.shape, self_grad.shape)):
-                if s == 1 and gs != 1:
-                    self_grad = self_grad.sum(axis=i, keepdims=True)
-
-            while len(other_grad.shape) > len(other.data.shape):
-                other_grad = other_grad.sum(axis=0)
-            for i, (s, gs) in enumerate(zip(other.data.shape, other_grad.shape)):
-                if s == 1 and gs != 1:
-                    other_grad = other_grad.sum(axis=i, keepdims=True)
-
-            self.grad += self_grad
-            other.grad += other_grad
+            if self.requires_grad:
+                self.grad += _reduce_grad(out.grad, self.data.shape)
+            if other.requires_grad:
+                other.grad += _reduce_grad(out.grad, other.data.shape)
         out._backward = _backward
         return out
 
@@ -107,41 +113,38 @@ class Tensor:
         out = Tensor(self.data * other.data, requires_grad=self.requires_grad or other.requires_grad,
                      _children=(self, other), _op='*')
         def _backward():
-            self_grad = other.data * out.grad
-            other_grad = self.data * out.grad
-            while len(self_grad.shape) > len(self.data.shape):
-                self_grad = self_grad.sum(axis=0)
-            for i, (s, gs) in enumerate(zip(self.data.shape, self_grad.shape)):
-                if s == 1 and gs != 1:
-                    self_grad = self_grad.sum(axis=i, keepdims=True)
-            while len(other_grad.shape) > len(other.data.shape):
-                other_grad = other_grad.sum(axis=0)
-            for i, (s, gs) in enumerate(zip(other.data.shape, other_grad.shape)):
-                if s == 1 and gs != 1:
-                    other_grad = other_grad.sum(axis=i, keepdims=True)
-            self.grad += self_grad
-            other.grad += other_grad
+            if self.requires_grad:
+                s_grad = other.data * out.grad
+                self.grad += _reduce_grad(s_grad, self.data.shape)
+            if other.requires_grad:
+                o_grad = self.data * out.grad
+                other.grad += _reduce_grad(o_grad, other.data.shape)
         out._backward = _backward
         return out
 
     def __matmul__(self, other):
-        """Matrix multiplication with autograd."""
+        """Matrix multiplication with generalized dimensional reduction."""
         other = other if isinstance(other, Tensor) else Tensor(other)
         out = Tensor(self.data @ other.data, requires_grad=self.requires_grad or other.requires_grad,
                      _children=(self, other), _op='@')
+
         def _backward():
-            if len(self.data.shape) == 1 and len(other.data.shape) == 1:
-                self.grad += out.grad * other.data
-                other.grad += out.grad * self.data
-            elif len(self.data.shape) == 2 and len(other.data.shape) == 2:
-                self.grad += out.grad @ other.data.T
-                other.grad += self.data.T @ out.grad
-            elif len(self.data.shape) >= 2 and len(other.data.shape) >= 2:
-                self.grad += out.grad @ np.swapaxes(other.data, -2, -1)
-                other.grad += np.swapaxes(self.data, -2, -1) @ out.grad
-            else:
-                self.grad += out.grad @ other.data.T if len(other.data.shape) == 2 else out.grad * other.data
-                other.grad += self.data.T @ out.grad if len(self.data.shape) == 2 else self.data * out.grad
+            if self.requires_grad:
+                if len(other.data.shape) >= 2:
+                    other_t = np.swapaxes(other.data, -2, -1)
+                    s_grad = out.grad @ other_t
+                else:
+                    s_grad = out.grad * other.data
+                self.grad += _reduce_grad(s_grad, self.data.shape)
+
+            if other.requires_grad:
+                if len(self.data.shape) >= 2:
+                    self_t = np.swapaxes(self.data, -2, -1)
+                    o_grad = self_t @ out.grad
+                else:
+                    o_grad = self.data * out.grad
+                other.grad += _reduce_grad(o_grad, other.data.shape)
+
         out._backward = _backward
         return out
 
@@ -149,7 +152,8 @@ class Tensor:
         out = Tensor(self.data ** power, requires_grad=self.requires_grad,
                      _children=(self,), _op=f'**{power}')
         def _backward():
-            self.grad += (power * self.data ** (power - 1)) * out.grad
+            if self.requires_grad:
+                self.grad += (power * self.data ** (power - 1)) * out.grad
         out._backward = _backward
         return out
 
@@ -180,9 +184,10 @@ class Tensor:
         out = Tensor(self.data[idx], requires_grad=self.requires_grad,
                      _children=(self,), _op='getitem')
         def _backward():
-            grad = np.zeros_like(self.data)
-            grad[idx] = out.grad
-            self.grad += grad
+            if self.requires_grad:
+                grad = np.zeros_like(self.data)
+                grad[idx] = out.grad
+                self.grad += grad
         out._backward = _backward
         return out
 
@@ -191,7 +196,8 @@ class Tensor:
         out = Tensor(np.exp(clipped), requires_grad=self.requires_grad,
                      _children=(self,), _op='exp')
         def _backward():
-            self.grad += out.data * out.grad
+            if self.requires_grad:
+                self.grad += out.data * out.grad
         out._backward = _backward
         return out
 
@@ -199,7 +205,8 @@ class Tensor:
         out = Tensor(np.log(self.data + 1e-12), requires_grad=self.requires_grad,
                      _children=(self,), _op='log')
         def _backward():
-            self.grad += (1.0 / (self.data + 1e-12)) * out.grad
+            if self.requires_grad:
+                self.grad += (1.0 / (self.data + 1e-12)) * out.grad
         out._backward = _backward
         return out
 
@@ -207,7 +214,8 @@ class Tensor:
         t = np.tanh(self.data)
         out = Tensor(t, requires_grad=self.requires_grad, _children=(self,), _op='tanh')
         def _backward():
-            self.grad += (1 - t ** 2) * out.grad
+            if self.requires_grad:
+                self.grad += (1 - t ** 2) * out.grad
         out._backward = _backward
         return out
 
@@ -215,7 +223,8 @@ class Tensor:
         out = Tensor(np.maximum(0, self.data), requires_grad=self.requires_grad,
                      _children=(self,), _op='relu')
         def _backward():
-            self.grad += (self.data > 0).astype(np.float64) * out.grad
+            if self.requires_grad:
+                self.grad += (self.data > 0).astype(np.float64) * out.grad
         out._backward = _backward
         return out
 
@@ -224,25 +233,26 @@ class Tensor:
         s = 1.0 / (1.0 + np.exp(-clipped))
         out = Tensor(s, requires_grad=self.requires_grad, _children=(self,), _op='sigmoid')
         def _backward():
-            self.grad += s * (1 - s) * out.grad
+            if self.requires_grad:
+                self.grad += s * (1 - s) * out.grad
         out._backward = _backward
         return out
 
     def softmax(self, axis=-1):
         shifted = self.data - np.max(self.data, axis=axis, keepdims=True)
-        exps = np.exp(shifted)
-        sm = exps / np.sum(exps, axis=axis, keepdims=True)
+        exp_vals = np.exp(shifted)
+        sm = exp_vals / np.sum(exp_vals, axis=axis, keepdims=True)
         out = Tensor(sm, requires_grad=self.requires_grad, _children=(self,), _op='softmax')
         def _backward():
-            # Jacobian-vector product for softmax
-            g = out.grad
-            dot = np.sum(g * sm, axis=axis, keepdims=True)
-            self.grad += sm * (g - dot)
+            if self.requires_grad:
+                g = out.grad
+                dot = np.sum(g * sm, axis=axis, keepdims=True)
+                self.grad += sm * (g - dot)
         out._backward = _backward
         return out
 
     def backward(self):
-        """Run backpropagation."""
+        """Run reverse-mode automatic differentiation."""
         topo = []
         visited = set()
         def build_topo(v):
