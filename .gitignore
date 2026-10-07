@@ -12,6 +12,9 @@ checkpoints/
 # Runtime caches (web search / online dictionary API responses)
 data/cache/
 
+# Learned dictionary (words the AI looks up online at runtime)
+data/learned_dictionary.json
+
 # Build artifacts
 build/
 dist/

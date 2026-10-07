@@ -26,6 +26,7 @@ from .dictionary import EnglishDictionary, WordEntry
 from .nlp import (Analyzer, Clause, Analysis, BM25Index, split_sentences,
                   tokenize, IS_WORD_PATTERNS)
 from .search import WebSearch, SearchResult
+from .version import __version__, format_version
 
 # BM25 score at/above which local knowledge is considered a confident match
 # (combined with query-term coverage - see _retrieve_knowledge).
@@ -48,7 +49,7 @@ class AIBrain:
     """
 
     def __init__(self, model_dir: str = 'checkpoints', search_enabled: bool = True,
-                 dictionary_online: bool = True):
+                 dictionary_online: bool = True, learn_file: Optional[str] = None):
         self.model_dir = model_dir
         self.model: Optional[TransformerLM] = None
         self.tokenizer: Optional[BPETokenizer] = None
@@ -59,7 +60,8 @@ class AIBrain:
         # New capabilities
         _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         data_dir = os.path.join(_root, 'data')
-        self.dictionary = EnglishDictionary(data_dir=data_dir, online=dictionary_online)
+        self.dictionary = EnglishDictionary(data_dir=data_dir, online=dictionary_online,
+                                            learn_file=learn_file)
         self.analyzer = Analyzer(self.dictionary, spellcheck=True)
         self.search = WebSearch(cache_dir=os.path.join(data_dir, 'cache'),
                                 enabled=search_enabled)
@@ -80,17 +82,22 @@ class AIBrain:
                 "Hey! Nice to meet you. I'm an AI assistant. What would you like to talk about?",
             ],
             'identity': [
-                "I'm SmartAI, a neural network-based AI built entirely from scratch in Python. "
-                "I use a transformer architecture with self-attention, trained on a knowledge corpus.",
-                "I'm SmartAI, an artificial intelligence created without using any pre-trained models. "
-                "My neural network was designed and trained from the ground up.",
+                f"I'm SmartAI {format_version(__version__)}, a neural network-based AI built "
+                "entirely from scratch in Python. I use a transformer architecture with "
+                "self-attention, trained on a knowledge corpus.",
+                f"I'm SmartAI {format_version(__version__)}, an artificial intelligence created "
+                "without using any pre-trained models. My neural network was designed and "
+                "trained from the ground up.",
             ],
             'capabilities': [
                 "I can answer questions, have conversations, explain concepts, define any English "
                 "word from my built-in dictionary, search the web for current facts, and generate "
-                "text. I understand complex, multi-part sentences and remember what we talked about.",
+                "text. When I meet a word or term I don't know, I look it up online and add it to "
+                "my dictionary so I remember it. I understand complex, multi-part sentences and "
+                "remember what we talked about.",
                 "My abilities include question answering, dictionary lookups with definitions and "
-                "synonyms, live web search, spelling corrections, and conversation.",
+                "synonyms, live web search, learning new words, spelling corrections, and "
+                "conversation.",
             ],
             'howareyou': [
                 "I'm doing great, thank you for asking! All my tensors are in a good mood today. "
@@ -405,9 +412,14 @@ class AIBrain:
                 lines.append(line)
             pos = entry.parts_of_speech[0] if entry.parts_of_speech else 'word'
             word = entry.word[0].upper() + entry.word[1:] if entry.word else entry.word
-            return f"{word} ({pos}): " + ' '.join(lines)
+            result = f"{word} ({pos}): " + ' '.join(lines)
+            if entry.freshly_learned:
+                result += (f" (That was new to me, so I looked it up online and added it "
+                           f"to my dictionary - knowledge is now at "
+                           f"{format_version(self.dictionary.knowledge_version)}.)")
+            return result
 
-        if entry.suggestions:
+        if entry.suggestions and not self.search.enabled:
             return (f"I couldn't find '{target}' in my dictionary. "
                     f"Did you mean: {', '.join(entry.suggestions)}?")
 
@@ -417,17 +429,60 @@ class AIBrain:
         if phrase_match:
             return phrase_match
 
-        # Otherwise search the web for it.
+        # New word/term for the AI: look it up online and learn it. (The
+        # title-match guard below rejects results for probable typos.)
         if self.search.enabled:
-            query = f'meaning of {target}' if ' ' not in target else target
-            answer = self._answer_search(query)
-            if answer:
-                return answer
+            learned = self._learn_from_web(target)
+            if learned:
+                return learned
             if self.search.last_status == 'offline':
                 return self._honest_unknown(clause)
+
+        # Maybe it was a typo of a known word after all
+        if entry.suggestions:
+            return (f"I couldn't find '{target}' in my dictionary. "
+                    f"Did you mean: {', '.join(entry.suggestions)}?")
         if ' ' in target:
             return self._honest_unknown(clause)
         return ''
+
+    def _learn_from_web(self, target: str) -> str:
+        """
+        Look up an unknown word or term online (Wikipedia / DuckDuckGo) and
+        add it to the learned dictionary, so it is known offline from now on.
+        Returns a response for the user, or '' when nothing was found.
+        """
+        result = self.search.quick_answer(target)
+        if result is None:
+            return ''
+        if not self._title_matches(target, result.title):
+            # The best result is about something else - the target is
+            # probably a misspelling, not a real unknown term.
+            return ''
+        summary = ' '.join(result.display.split())
+        if len(summary) < 20:
+            return ''
+        if not self.dictionary.learn_from_summary(target, summary,
+                                                  source=result.source,
+                                                  url=result.url):
+            return ''
+        if not summary.endswith(('.', '!', '?')):
+            summary += '.'
+        display = target[0].upper() + target[1:] if target else target
+        source_url = f" Source: {result.url}." if result.url else ''
+        return (f"{display}: {summary}{source_url} That was new to me, so I looked "
+                f"it up and added it to my dictionary - knowledge is now at "
+                f"{format_version(self.dictionary.knowledge_version)}.")
+
+    @staticmethod
+    def _title_matches(target: str, title: str) -> bool:
+        """True when a search result title is really about the target."""
+        target_words = {w for w in re.findall(r'\w+', target.lower())
+                        if w not in ('the', 'a', 'an', 'of', 'is', 'what')}
+        title_words = set(re.findall(r'\w+', (title or '').lower()))
+        if not target_words:
+            return False
+        return bool(target_words & title_words)
 
     def _find_phrase_match(self, phrase: str) -> str:
         """Find a knowledge document that literally discusses `phrase`."""

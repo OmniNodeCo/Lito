@@ -11,12 +11,16 @@ import gzip
 import json
 import os
 import re
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
 from typing import Dict, List, Optional, Set, Tuple
 
-POS_NAMES = {'n': 'noun', 'v': 'verb', 'a': 'adjective', 'r': 'adverb', 's': 'adjective'}
+from .version import __version__, bump_patch
+
+POS_NAMES = {'n': 'noun', 'v': 'verb', 'a': 'adjective', 'r': 'adverb',
+             's': 'adjective', 'x': 'term'}
 
 _POS_RANK = {'n': 0, 'v': 1, 'a': 2, 'r': 3}
 
@@ -47,7 +51,7 @@ class Definition:
 class WordEntry:
     """All senses found for a word."""
 
-    __slots__ = ('word', 'definitions', 'found', 'suggestions')
+    __slots__ = ('word', 'definitions', 'found', 'suggestions', 'freshly_learned')
 
     def __init__(self, word: str, definitions: Optional[List[Definition]] = None,
                  found: bool = False, suggestions: Optional[List[str]] = None):
@@ -55,6 +59,8 @@ class WordEntry:
         self.definitions = definitions or []
         self.found = found
         self.suggestions = suggestions or []
+        # True when this lookup had to learn the word online just now
+        self.freshly_learned = False
 
     @property
     def parts_of_speech(self) -> List[str]:
@@ -70,28 +76,36 @@ class WordEntry:
 
 class EnglishDictionary:
     """
-    The entire English dictionary, offline-first.
+    The entire English dictionary, offline-first, and able to learn.
 
     - Word validity, autocomplete and spelling suggestions come from a
       370k-word list plus 160k frequency counts.
     - Definitions, synonyms and examples come from WordNet 3.0.
     - When online, entries are enriched with the Free Dictionary API.
+    - Words and terms the AI doesn't know are looked up online and saved to
+      a persistent learned dictionary (data/learned_dictionary.json), so
+      they are known offline forever after. Each learned entry bumps the
+      knowledge version.
     """
 
     WORDS_FILE = 'english_words.txt'
     WORDNET_FILE = 'wordnet_dictionary.jsonl.gz'
     EXCEPTIONS_FILE = 'wordnet_exceptions.tsv'
     FREQ_FILE = 'word_frequencies.json.gz'
+    LEARNED_FILE = 'learned_dictionary.json'
     FREE_DICT_API = 'https://api.dictionaryapi.dev/api/v2/entries/en/{}'
 
     def __init__(self, data_dir: Optional[str] = None, online: bool = True,
-                 timeout: float = 4.0):
+                 timeout: float = 4.0, learn_file: Optional[str] = None,
+                 autolearn: bool = True):
         if data_dir is None:
             data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
         self.data_dir = data_dir
         self.online = online
         self.timeout = timeout
+        self.autolearn = autolearn
         self.cache_dir = os.path.join(self.data_dir, 'cache')
+        self._learn_path = learn_file or os.path.join(self.data_dir, self.LEARNED_FILE)
 
         self._words: Optional[Set[str]] = None
         self._entries: Optional[Dict[str, str]] = None     # lemma -> raw JSON string
@@ -99,6 +113,7 @@ class EnglishDictionary:
         self._freq: Optional[Dict[str, int]] = None
         self._exceptions: Optional[Dict[str, List[Tuple[str, str]]]] = None
         self._api_cache: Dict[str, dict] = {}
+        self._learned: Optional[dict] = None               # learned dictionary store
         self._load_failed = False
 
     # ------------------------------------------------------------------
@@ -196,13 +211,19 @@ class EnglishDictionary:
         """
         Look a word up in the dictionary. Returns all senses found, ordered
         nouns -> verbs -> adjectives -> adverbs (most frequent sense first).
+
+        Lookup order: WordNet -> learned dictionary (words the AI previously
+        looked up online) -> Free Dictionary API. When the word is unknown
+        locally and the API defines it, the result is saved to the learned
+        dictionary (so it is known offline from now on) and the entry is
+        flagged `freshly_learned`.
         """
         use_online = self.online if use_online is None else use_online
         raw = word.strip()
         word_l = raw.lower()
         entry = WordEntry(raw)
 
-        # WordNet (offline)
+        # 1. WordNet (offline)
         self._ensure_entries()
         record = None
         for candidate in (word_l, word_l.replace(' ', '_')):
@@ -226,12 +247,32 @@ class EnglishDictionary:
             # Valid word but not a WordNet lemma (inflection or rare word)
             entry.found = True
 
-        # Online enrichment
+        # 2. Learned dictionary - words/terms the AI looked up before
+        if not entry.definitions:
+            for candidate in (word_l, word_l.replace(' ', '_')):
+                learned = self._learned_entry(candidate)
+                if learned:
+                    entry.found = True
+                    for sense in learned.get('definitions', []):
+                        entry.definitions.append(Definition(
+                            raw, sense.get('pos', 'x'), sense.get('text', ''),
+                            sense.get('example', ''), sense.get('synonyms', []),
+                            source='learned'))
+                    break
+
+        # 3. Online Free Dictionary API (enrichment, and learning for
+        #    words that are unknown locally)
+        had_local_definitions = bool(entry.definitions)
         if use_online and word_l:
-            for extra in self._fetch_online_definitions(word_l):
+            extras = self._fetch_online_definitions(word_l)
+            if extras:
                 entry.found = True
-                entry.definitions.append(Definition(
-                    raw, extra[0], extra[1], extra[2], extra[3], source='online'))
+                for pos, text, example, synonyms in extras:
+                    entry.definitions.append(Definition(
+                        raw, pos, text, example, synonyms, source='online'))
+                if not had_local_definitions and self.autolearn:
+                    self.learn(word_l, extras, source='free-dictionary-api')
+                    entry.freshly_learned = True
 
         if not entry.found:
             entry.suggestions = self.suggest(word_l)
@@ -284,6 +325,94 @@ class EnglishDictionary:
         except AttributeError:
             return []
         return results
+
+    # ------------------------------------------------------------------
+    # Learning: unknown words/terms are looked up online and remembered
+    # ------------------------------------------------------------------
+
+    def _ensure_learned(self) -> dict:
+        """Load (once) the persistent learned dictionary."""
+        if self._learned is None:
+            data = None
+            try:
+                if os.path.exists(self._learn_path):
+                    with open(self._learn_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+            except (OSError, json.JSONDecodeError, ValueError):
+                data = None
+            if not isinstance(data, dict) or not isinstance(data.get('entries'), dict):
+                data = {'schema': 1, 'knowledge_version': __version__, 'entries': {}}
+            data.setdefault('knowledge_version', __version__)
+            data.setdefault('entries', {})
+            self._learned = data
+        return self._learned
+
+    def _learned_entry(self, word_l: str) -> Optional[dict]:
+        return self._ensure_learned()['entries'].get(word_l)
+
+    def _save_learned(self) -> None:
+        try:
+            directory = os.path.dirname(self._learn_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(self._learn_path, 'w', encoding='utf-8') as f:
+                json.dump(self._learned, f, ensure_ascii=False, indent=1)
+        except OSError:
+            pass  # read-only install: keep learning in memory only
+
+    def learn(self, word: str, definitions: List[Tuple[str, str, str, List[str]]],
+              source: str = 'web', url: str = '') -> bool:
+        """
+        Add a word or term with definitions to the learned dictionary and
+        bump the knowledge version. `definitions` is a list of
+        (pos, text, example, synonyms) tuples.
+        """
+        word = word.strip().lower()
+        definitions = [d for d in definitions if d and d[1] and str(d[1]).strip()]
+        if not word or not definitions:
+            return False
+        learned = self._ensure_learned()
+        learned['entries'][word] = {
+            'definitions': [
+                {'pos': d[0], 'text': ' '.join(str(d[1]).split()),
+                 'example': d[2] or '', 'synonyms': list(d[3] or [])}
+                for d in definitions
+            ],
+            'source': source,
+            'url': url,
+            'learned_at': time.strftime('%Y-%m-%dT%H:%M:%S'),
+        }
+        learned['knowledge_version'] = bump_patch(
+            learned.get('knowledge_version', __version__))
+        self._save_learned()
+        return True
+
+    def learn_from_summary(self, term: str, summary: str,
+                           source: str = 'web', url: str = '') -> bool:
+        """Learn a term (often multi-word) from a web summary text."""
+        summary = ' '.join(str(summary or '').split()).strip()
+        if len(summary) < 10:
+            return False
+        return self.learn(term, [('x', summary, '', [])], source=source, url=url)
+
+    def forget(self, word: str) -> bool:
+        """Remove a learned word or term from the learned dictionary."""
+        learned = self._ensure_learned()
+        if word.strip().lower() in learned['entries']:
+            del learned['entries'][word.strip().lower()]
+            self._save_learned()
+            return True
+        return False
+
+    @property
+    def knowledge_version(self) -> str:
+        """The knowledge version - bumped each time a word is learned."""
+        return self._ensure_learned().get('knowledge_version', __version__)
+
+    @property
+    def learned_words(self) -> List[str]:
+        """All words and terms the AI has learned, sorted."""
+        return sorted(self._ensure_learned()['entries'].keys())
 
     # ------------------------------------------------------------------
     # Spelling suggestions / autocomplete
@@ -363,6 +492,7 @@ class EnglishDictionary:
             'defined_lemmas': len(self._ensure_entries()),
             'irregular_forms': len(self._ensure_exceptions()),
             'frequency_entries': len(self._ensure_freq()),
+            'learned_words': len(self._ensure_learned()['entries']),
         }
 
     def random_word(self, min_len: int = 4, max_len: int = 12) -> str:

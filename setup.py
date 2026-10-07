@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='smartai',
-    version='1.0.0',
+    version='1.1.0',
     description='An AI built entirely from scratch - no pretrained models',
     author='SmartAI',
     packages=find_packages(),

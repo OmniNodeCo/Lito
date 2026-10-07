@@ -4,6 +4,8 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
+**Current version: v1.1.0** — see [Versions](#versions).
+
 ```
   ____                       _      _    ___
  / ___| _ __ ___   __ _ _ __| |_   / \  |_ _|
@@ -24,6 +26,10 @@ English dictionary, and live web search.
   examples (all offline), enriched online by the Free Dictionary API
 - **Search the web** — Wikipedia and DuckDuckGo Instant Answers, no API keys
   needed, with caching and graceful offline behavior
+- **Learn new words and terms** — when asked about a word or term it doesn't
+  know, SmartAI searches the web, adds it to its own learned dictionary and
+  remembers it offline forever after (each learned entry bumps the AI's
+  knowledge version)
 
 ## Quick start
 
@@ -68,6 +74,17 @@ python main.py --chat-only
 🧑 You: How do you spell necesarry?
 🤖 AI: (I assumed you meant: 'necesarry' -> 'necessary') 'necesarry' is not in the
        English dictionary. Did you mean: necessary?
+
+🧑 You: what is quantum entanglement?
+🤖 AI: Quantum entanglement: Quantum entanglement is the phenomenon whereby the
+       quantum states of two or more particles become correlated... Source:
+       https://en.wikipedia.org/wiki/Quantum_entanglement. That was new to me, so
+       I looked it up and added it to my dictionary - knowledge is now at v1.1.1.
+
+🧑 You: what is quantum entanglement?
+🤖 AI: Quantum entanglement (term): Quantum entanglement is the phenomenon whereby
+       the quantum states of two or more particles become correlated...
+       (answered from the learned dictionary, no web needed)
 ```
 
 ## Chat commands
@@ -78,10 +95,11 @@ python main.py --chat-only
 | `/spell <word>` | Check spelling and get suggestions |
 | `/synonyms <word>` | List synonyms |
 | `/words <prefix>` | Autocomplete words from the dictionary |
+| `/learned` | Show words and terms the AI learned from the web |
 | `/search <query>` | Search the web (Wikipedia + DuckDuckGo) |
 | `/search on` / `off` | Toggle automatic web search |
 | `/generate <prompt>` | Raw neural generation from the trained model |
-| `/info` | Model, dictionary and search status |
+| `/info` | Model, dictionary, version and search status |
 | `/reset`, `/help`, `/quit` | Conversation management |
 
 ## CLI options
@@ -112,6 +130,7 @@ user input
 │ 1. small talk & identity                                 │
 │ 2. dictionary intents: define / spell / is-a-word /      │
 │    synonyms (src/dictionary.py, WordNet offline)         │
+│    └─ unknown word? search online, LEARN it, remember it │
 │ 3. BM25 retrieval over knowledge base + corpus           │
 │    (score + weighted-coverage confidence)                │
 │ 4. web search fallback (src/search.py, Wikipedia + DDG)  │
@@ -151,6 +170,31 @@ Offline data in `data/` (see `data/README.md` for sources and licenses):
 | `wordnet_exceptions.tsv` | 5,952 irregular morphology mappings |
 | `word_frequencies.json.gz` | 160,572 word frequencies (spelling + keyword weighting) |
 
+### Learning new words (`src/dictionary.py` + `src/brain.py`)
+
+When a definition question targets something the AI doesn't know
+(not in WordNet, not in the learned dictionary, not discussed by the local
+knowledge base), it:
+
+1. Searches the web for the word or term (a title-match guard rejects
+   results for probable misspellings, so typos fall back to "did you mean?")
+2. Saves the summary to `data/learned_dictionary.json`
+3. Bumps the knowledge version (e.g. v1.1.0 → v1.1.1) and tells the user
+
+Learned entries are used for every future lookup — offline, instantly, across
+restarts. Single unknown words are also learned automatically from the Free
+Dictionary API. See what the AI knows with `/learned`.
+
+### Versions (`src/version.py`)
+
+SmartAI carries two version numbers:
+
+- **Application version** — the software itself (currently **v1.1.0**). Shown
+  at startup, in `/info`, in identity answers and via `python main.py --version`.
+- **Knowledge version** — starts at the application version and bumps its
+  patch number with every word or term the AI learns (v1.1.0 → v1.1.1 → ...).
+  Shown when the AI learns something and in `/info` / `/learned`.
+
 ### Web search (`src/search.py`)
 
 Free, key-less APIs over the standard library only:
@@ -176,7 +220,7 @@ weights and the from-scratch BPE tokenizer to `checkpoints/`.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 34 tests, no network required
+python tests/test_features.py     # 40 tests, no network required
 ```
 
 ## Project layout

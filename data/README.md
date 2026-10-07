@@ -11,7 +11,10 @@ This directory contains the offline English dictionary data used by
 | `word_frequencies.json.gz` | 160,572 words with corpus frequencies (spelling suggestion ranking, keyword weighting) | [pyspellchecker](https://pyspellchecker.readthedocs.io/) `en.json.gz` | MIT |
 
 `data/cache/` (created at runtime) holds cached web-search and online
-dictionary API responses. It is not committed to the repository.
+dictionary API responses, and `data/learned_dictionary.json` (created at
+runtime) stores words and terms the AI looked up online and learned. Neither
+is committed to the repository; each learned entry bumps the AI's knowledge
+version (see `src/version.py`).
 
 ## Regenerating the WordNet files
 

@@ -5,21 +5,23 @@ Interactive chat interface.
 import sys
 import os
 from .brain import AIBrain
+from .version import APP_NAME, __version__, format_version
 
 
 class ChatInterface:
     """Terminal-based chat interface for the AI."""
 
-    BANNER = r"""
+    BANNER = rf"""
   ____                       _      _    ___
  / ___| _ __ ___   __ _ _ __| |_   / \  |_ _|
  \___ \| '_ ` _ \| _` | '__| __| / _ \  | |
   ___) | | | | | | (_| | |  | |_ / ___ \ | |
  |____/|_| |_| |_|\__,_|_|   \__/_/   \_\___|
 
+    {APP_NAME} {format_version(__version__)}
     AI Built From Scratch - No Pretrained Models
     =============================================
-    Dictionary: 370k words + WordNet definitions
+    Dictionary: 370k words + WordNet definitions + learns new words
     Web search: Wikipedia + DuckDuckGo (no API keys)
     """
 
@@ -27,13 +29,14 @@ class ChatInterface:
         '/quit': 'Exit the chat',
         '/reset': 'Clear conversation history',
         '/help': 'Show available commands',
-        '/info': 'Show model information',
+        '/info': 'Show model, dictionary and version information',
         '/generate': 'Generate text from a prompt',
         '/search': '/search <query> - search the web; /search on|off - toggle auto-search',
         '/define': '/define <word> - full dictionary entry (definitions, examples, synonyms)',
         '/spell': '/spell <word> - check spelling and get suggestions',
         '/synonyms': '/synonyms <word> - list synonyms',
         '/words': '/words <prefix> - autocomplete words from the dictionary',
+        '/learned': 'Show words and terms the AI learned from the web',
     }
 
     def __init__(self, model_dir: str = 'checkpoints', search_enabled: bool = True,
@@ -153,10 +156,39 @@ class ChatInterface:
             else:
                 print("Usage: /words <prefix>")
 
+        elif cmd == '/learned':
+            self._show_learned()
+
         else:
             print(f"Unknown command: {cmd}. Type /help for available commands.")
 
         return True
+
+    def _show_learned(self):
+        """Show the words and terms the AI has learned from the web."""
+        dictionary = self.brain.dictionary
+        words = dictionary.learned_words
+        if not words:
+            print("\n🧠 I haven't learned any new words yet. Ask me to define a word "
+                  "or term I don't know (with web search on, '/search on') and I'll "
+                  "look it up and remember it forever.")
+            return
+        print(f"\n🧠 Learned dictionary - {len(words)} word(s)/term(s), "
+              f"knowledge at {format_version(dictionary.knowledge_version)}:")
+        for word in words:
+            entry = dictionary._learned_entry(word) or {}
+            source = entry.get('source', 'web')
+            url = entry.get('url', '')
+            learned_at = entry.get('learned_at', '')
+            line = f"  {word}"
+            if url:
+                line += f"  ({url})"
+            elif source:
+                line += f"  (via {source})"
+            if learned_at:
+                line += f"  [{learned_at[:10]}]"
+            print(line)
+        print("These are remembered offline in data/learned_dictionary.json.")
 
     def _handle_search(self, argument: str) -> None:
         if not argument:
@@ -186,7 +218,7 @@ class ChatInterface:
 
     def _show_info(self):
         """Display model information."""
-        print("\n📊 Model Information:")
+        print(f"\n📊 {APP_NAME} {format_version(__version__)}")
         print(f"  Model loaded: {'Yes ✅' if self.brain.loaded else 'No ❌'}")
 
         if self.brain.model is not None:
@@ -210,6 +242,8 @@ class ChatInterface:
             print(f"  WordNet lemmas with definitions: {stats['defined_lemmas']:,}")
             print(f"  Irregular forms: {stats['irregular_forms']:,}")
             print(f"  Frequency data: {stats['frequency_entries']:,} words")
+            print(f"  Learned words/terms: {stats['learned_words']:,} "
+                  f"(knowledge {format_version(self.brain.dictionary.knowledge_version)})")
         except Exception as e:
             print(f"  (unavailable: {e})")
 

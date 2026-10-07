@@ -15,6 +15,8 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from src.version import APP_NAME, __version__, format_version
+
 
 def check_model_exists(save_dir: str) -> bool:
     """Check if model weights and tokenizer exist."""
@@ -89,6 +91,8 @@ def main():
                         help='Disable live web search (dictionary and knowledge base still work offline)')
     parser.add_argument('--no-online-dictionary', action='store_true',
                         help='Disable online definition enrichment (offline WordNet still works)')
+    parser.add_argument('--version', action='version',
+                        version=f'{APP_NAME} {format_version(__version__)}')
     args = parser.parse_args()
 
     # Step 1: Handle manual download flag

@@ -13,6 +13,7 @@ Also compatible with pytest:
 import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,6 +22,7 @@ from src.nlp import (Analyzer, BM25Index, Lemmatizer, negated_scope,
                      split_sentences, tokenize)
 from src.search import WebSearch, strip_html
 from src.brain import AIBrain
+from src.version import __version__, bump_patch, bump_minor, format_version, parse_version
 
 # ----------------------------------------------------------------------
 # Shared fixtures (lazy singletons so everything loads only once)
@@ -427,6 +429,123 @@ def brain_greeting_then_question():
     brain.reset_conversation()
     response = brain.think('Hi! What is gravity?')
     assert 'gravity' in response.lower(), response
+
+
+# ----------------------------------------------------------------------
+# Version numbers
+# ----------------------------------------------------------------------
+
+@test
+def version_helpers():
+    assert parse_version('v1.2.3') == (1, 2, 3)
+    assert parse_version('1.2') == (1, 2, 0)
+    assert bump_patch('1.1.0') == '1.1.1'
+    assert bump_patch('v2.0.9') == '2.0.10'
+    assert bump_minor('1.1.4') == '1.2.0'
+    assert format_version('1.1.0') == 'v1.1.0'
+    assert format_version() == f'v{__version__}'
+    assert __version__ != '1.0.0', 'the AI version should have moved past 1.0.0'
+
+
+@test
+def brain_reports_version():
+    brain = get_brain()
+    identity = brain.think('who are you?')
+    assert __version__ in identity, f'identity should mention the version: {identity}'
+
+
+# ----------------------------------------------------------------------
+# Learning: unknown words/terms are searched and added to the dictionary
+# ----------------------------------------------------------------------
+
+@test
+def dictionary_learning_persists():
+    with tempfile.TemporaryDirectory() as tmp:
+        learn_file = os.path.join(tmp, 'learned_dictionary.json')
+        d = EnglishDictionary(online=False, learn_file=learn_file)
+        assert d.learned_words == []
+        initial_version = d.knowledge_version
+
+        ok = d.learn_from_summary(
+            'quantum entanglement',
+            'Quantum entanglement is the phenomenon whereby particles become correlated.',
+            source='wikipedia', url='https://en.wikipedia.org/wiki/Quantum_entanglement')
+        assert ok
+        assert d.knowledge_version == bump_patch(initial_version)
+        assert 'quantum entanglement' in d.learned_words
+
+        # A fresh instance must see the learned entry (persistence)
+        d2 = EnglishDictionary(online=False, learn_file=learn_file)
+        entry = d2.lookup('quantum entanglement', use_online=False)
+        assert entry.found and entry.definitions
+        assert entry.definitions[0].source == 'learned'
+        assert 'correlated' in entry.definitions[0].text
+        assert not entry.freshly_learned
+        assert d2.knowledge_version == d.knowledge_version
+        assert 'quantum entanglement' in d2.learned_words
+
+
+@test
+def dictionary_forget_and_rejects_bad_learn():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = EnglishDictionary(online=False,
+                              learn_file=os.path.join(tmp, 'learned_dictionary.json'))
+        assert not d.learn_from_summary('x', 'too short')  # summary too short
+        assert not d.learn('', [('n', 'definition', '', [])])  # no word
+        assert d.learn('blockchain', [('n', 'a distributed ledger', '', [])])
+        assert d.learned_words == ['blockchain']
+        assert d.forget('blockchain')
+        assert not d.forget('blockchain')
+        assert d.learned_words == []
+
+
+@test
+def brain_learns_unknown_terms_from_web():
+    from src.search import SearchResult
+    with tempfile.TemporaryDirectory() as tmp:
+        brain = AIBrain(search_enabled=True, dictionary_online=False,
+                        learn_file=os.path.join(tmp, 'learned_dictionary.json'))
+        brain.loaded = False
+        # Mock the web search with a realistic Wikipedia result
+        brain.search.quick_answer = lambda query: SearchResult(
+            title='Quantum entanglement', snippet='',
+            url='https://en.wikipedia.org/wiki/Quantum_entanglement',
+            source='wikipedia',
+            extract='Quantum entanglement is the phenomenon whereby the quantum '
+                    'states of two or more particles become correlated.')
+
+        response = brain.think('what is quantum entanglement?')
+        assert 'correlated' in response.lower(), response
+        assert "added it to my dictionary" in response.lower(), response
+        assert 'quantum entanglement' in brain.dictionary.learned_words
+        version_after_learning = brain.dictionary.knowledge_version
+        assert parse_version(version_after_learning)[2] >= 1
+
+        # Asking again must use the learned entry WITHOUT claiming to learn it
+        response2 = brain.think('what is quantum entanglement?')
+        assert 'correlated' in response2.lower(), response2
+        assert 'added it to my dictionary' not in response2.lower(), response2
+        assert brain.dictionary.knowledge_version == version_after_learning
+
+
+@test
+def brain_does_not_learn_typos():
+    from src.search import SearchResult
+    with tempfile.TemporaryDirectory() as tmp:
+        brain = AIBrain(search_enabled=True, dictionary_online=False,
+                        learn_file=os.path.join(tmp, 'learned_dictionary.json'))
+        brain.loaded = False
+        # Wikipedia would fuzzy-match a misspelling to the correct article;
+        # the title-match guard must reject learning the typo.
+        brain.search.quick_answer = lambda query: SearchResult(
+            title='Serendipity', snippet='',
+            url='https://en.wikipedia.org/wiki/Serendipity', source='wikipedia',
+            extract='Serendipity is the occurrence of events by chance.')
+        response = brain.think('what does serendipidy mean?')
+        assert 'serendipidy' not in brain.dictionary.learned_words, \
+            f'typo must not be learned: {brain.dictionary.learned_words}'
+        # Falls back to the spelling suggestion instead
+        assert 'serendipity' in response.lower(), response
 
 
 # ----------------------------------------------------------------------
