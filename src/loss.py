@@ -5,11 +5,7 @@ from .tensor import Tensor
 
 
 def cross_entropy_loss(logits: Tensor, targets: np.ndarray) -> Tensor:
-    """
-    Cross entropy loss for language modeling.
-    logits: (batch, seq_len, vocab_size)
-    targets: (batch, seq_len)
-    """
+    """Cross entropy loss for autoregressive language modeling."""
     orig_shape = logits.data.shape
     vocab_size = orig_shape[-1]
     logits_2d = logits.data.reshape(-1, vocab_size)

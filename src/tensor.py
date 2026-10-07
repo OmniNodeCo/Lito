@@ -12,11 +12,9 @@ def _reduce_grad(grad: np.ndarray, target_shape: Tuple[int, ...]) -> np.ndarray:
     if grad.shape == target_shape:
         return grad
 
-    # Sum out leading dimensions if grad has more dimensions than target
     while len(grad.shape) > len(target_shape):
         grad = np.sum(grad, axis=0)
 
-    # Sum along dimensions where target shape is 1
     for i, (ts, gs) in enumerate(zip(target_shape, grad.shape)):
         if ts == 1 and gs != 1:
             grad = np.sum(grad, axis=i, keepdims=True)
@@ -123,7 +121,7 @@ class Tensor:
         return out
 
     def __matmul__(self, other):
-        """Matrix multiplication with generalized dimensional reduction."""
+        """Matrix multiplication with multi-dimensional gradient reduction."""
         other = other if isinstance(other, Tensor) else Tensor(other)
         out = Tensor(self.data @ other.data, requires_grad=self.requires_grad or other.requires_grad,
                      _children=(self, other), _op='@')

@@ -12,9 +12,7 @@ from .layers import (
 
 
 class TransformerLM(Layer):
-    """
-    A GPT-style transformer language model built entirely from scratch.
-    """
+    """A GPT-style transformer language model built entirely from scratch."""
     def __init__(self, vocab_size: int, d_model: int = 128, n_heads: int = 4,
                  n_layers: int = 4, d_ff: int = 512, max_seq_len: int = 256,
                  dropout: float = 0.1):

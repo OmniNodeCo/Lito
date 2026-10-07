@@ -1,307 +1,301 @@
-"""
-Custom tensor operations built on top of numpy.
-Implements automatic differentiation (autograd).
-"""
+"""Neural network layers built from scratch."""
 
 import numpy as np
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional
+from .tensor import Tensor, _reduce_grad
 
 
-def _reduce_grad(grad: np.ndarray, target_shape: Tuple[int, ...]) -> np.ndarray:
-    """Reduce gradient dimensions to match target parameter shape."""
-    if grad.shape == target_shape:
-        return grad
+class Layer:
+    """Base layer class."""
+    def __init__(self):
+        self.training = True
 
-    # Sum out leading dimensions if grad has more dimensions than target
-    while len(grad.shape) > len(target_shape):
-        grad = np.sum(grad, axis=0)
+    def parameters(self) -> List[Tensor]:
+        return []
 
-    # Sum along dimensions where target shape is 1
-    for i, (ts, gs) in enumerate(zip(target_shape, grad.shape)):
-        if ts == 1 and gs != 1:
-            grad = np.sum(grad, axis=i, keepdims=True)
+    def forward(self, x: Tensor) -> Tensor:
+        raise NotImplementedError
 
-    return grad.reshape(target_shape)
+    def __call__(self, x: Tensor) -> Tensor:
+        return self.forward(x)
+
+    def train(self):
+        self.training = True
+
+    def eval(self):
+        self.training = False
 
 
-class Tensor:
-    """A tensor with automatic differentiation support."""
+class Linear(Layer):
+    """Fully connected linear layer."""
+    def __init__(self, in_features: int, out_features: int, bias: bool = True):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = Tensor.he_normal(in_features, out_features, requires_grad=True)
+        self.bias_tensor = None
+        if bias:
+            self.bias_tensor = Tensor(np.zeros((1, out_features)), requires_grad=True)
 
-    def __init__(self, data, requires_grad=False, _children=(), _op=''):
-        if isinstance(data, (int, float)):
-            data = np.array([data], dtype=np.float64)
-        elif isinstance(data, list):
-            data = np.array(data, dtype=np.float64)
-        elif isinstance(data, np.ndarray):
-            data = data.astype(np.float64)
+    def forward(self, x: Tensor) -> Tensor:
+        out = x @ self.weight
+        if self.bias_tensor is not None:
+            out = out + self.bias_tensor
+        return out
+
+    def parameters(self) -> List[Tensor]:
+        params = [self.weight]
+        if self.bias_tensor is not None:
+            params.append(self.bias_tensor)
+        return params
+
+
+class Embedding(Layer):
+    """Embedding lookup table."""
+    def __init__(self, num_embeddings: int, embedding_dim: int):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.weight = Tensor(
+            np.random.randn(num_embeddings, embedding_dim) * 0.02,
+            requires_grad=True
+        )
+
+    def forward(self, indices) -> Tensor:
+        if isinstance(indices, Tensor):
+            idx = indices.data.astype(int)
         else:
-            data = np.array(data, dtype=np.float64)
+            idx = np.array(indices, dtype=int)
 
-        self.data = data
-        self.grad = np.zeros_like(self.data, dtype=np.float64)
-        self.requires_grad = requires_grad
-        self._backward = lambda: None
-        self._prev = set(_children)
-        self._op = _op
-
-    @property
-    def shape(self):
-        return self.data.shape
-
-    @property
-    def T(self):
-        out = Tensor(self.data.T, requires_grad=self.requires_grad, _children=(self,), _op='transpose')
-        def _backward():
-            if self.requires_grad:
-                self.grad += out.grad.T
-        out._backward = _backward
-        return out
-
-    def reshape(self, *shape):
-        out = Tensor(self.data.reshape(*shape), requires_grad=self.requires_grad, _children=(self,), _op='reshape')
-        def _backward():
-            if self.requires_grad:
-                self.grad += out.grad.reshape(self.data.shape)
-        out._backward = _backward
-        return out
-
-    def sum(self, axis=None, keepdims=False):
-        out = Tensor(np.sum(self.data, axis=axis, keepdims=keepdims),
-                     requires_grad=self.requires_grad, _children=(self,), _op='sum')
-        def _backward():
-            if self.requires_grad:
-                if axis is None:
-                    self.grad += np.ones_like(self.data) * out.grad
-                else:
-                    grad = out.grad
-                    if not keepdims:
-                        grad = np.expand_dims(grad, axis=axis)
-                    self.grad += np.ones_like(self.data) * grad
-        out._backward = _backward
-        return out
-
-    def mean(self, axis=None, keepdims=False):
-        n = self.data.size if axis is None else self.data.shape[axis]
-        out = Tensor(np.mean(self.data, axis=axis, keepdims=keepdims),
-                     requires_grad=self.requires_grad, _children=(self,), _op='mean')
-        def _backward():
-            if self.requires_grad:
-                if axis is None:
-                    self.grad += np.ones_like(self.data) * out.grad / n
-                else:
-                    grad = out.grad
-                    if not keepdims:
-                        grad = np.expand_dims(grad, axis=axis)
-                    self.grad += np.ones_like(self.data) * grad / n
-        out._backward = _backward
-        return out
-
-    def __add__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(np.full_like(self.data, other))
-        out = Tensor(self.data + other.data, requires_grad=self.requires_grad or other.requires_grad,
-                     _children=(self, other), _op='+')
-        def _backward():
-            if self.requires_grad:
-                self.grad += _reduce_grad(out.grad, self.data.shape)
-            if other.requires_grad:
-                other.grad += _reduce_grad(out.grad, other.data.shape)
-        out._backward = _backward
-        return out
-
-    def __mul__(self, other):
-        other = other if isinstance(other, Tensor) else Tensor(np.full_like(self.data, other))
-        out = Tensor(self.data * other.data, requires_grad=self.requires_grad or other.requires_grad,
-                     _children=(self, other), _op='*')
-        def _backward():
-            if self.requires_grad:
-                s_grad = other.data * out.grad
-                self.grad += _reduce_grad(s_grad, self.data.shape)
-            if other.requires_grad:
-                o_grad = self.data * out.grad
-                other.grad += _reduce_grad(o_grad, other.data.shape)
-        out._backward = _backward
-        return out
-
-    def __matmul__(self, other):
-        """Matrix multiplication with generalized dimensional reduction."""
-        other = other if isinstance(other, Tensor) else Tensor(other)
-        out = Tensor(self.data @ other.data, requires_grad=self.requires_grad or other.requires_grad,
-                     _children=(self, other), _op='@')
+        embedded = self.weight.data[idx]
+        out = Tensor(embedded, requires_grad=True, _children=(self.weight,), _op='embedding')
 
         def _backward():
-            if self.requires_grad:
-                if len(other.data.shape) >= 2:
-                    other_t = np.swapaxes(other.data, -2, -1)
-                    s_grad = out.grad @ other_t
-                else:
-                    s_grad = out.grad * other.data
-                self.grad += _reduce_grad(s_grad, self.data.shape)
-
-            if other.requires_grad:
-                if len(self.data.shape) >= 2:
-                    self_t = np.swapaxes(self.data, -2, -1)
-                    o_grad = self_t @ out.grad
-                else:
-                    o_grad = self.data * out.grad
-                other.grad += _reduce_grad(o_grad, other.data.shape)
+            if self.weight.requires_grad:
+                np.add.at(self.weight.grad, idx, out.grad)
 
         out._backward = _backward
         return out
 
-    def __pow__(self, power):
-        out = Tensor(self.data ** power, requires_grad=self.requires_grad,
-                     _children=(self,), _op=f'**{power}')
+    def parameters(self) -> List[Tensor]:
+        return [self.weight]
+
+
+class LayerNorm(Layer):
+    """Layer Normalization."""
+    def __init__(self, normalized_shape: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.gamma = Tensor(np.ones((1, normalized_shape)), requires_grad=True)
+        self.beta = Tensor(np.zeros((1, normalized_shape)), requires_grad=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        mean = x.data.mean(axis=-1, keepdims=True)
+        var = x.data.var(axis=-1, keepdims=True)
+        x_norm_data = (x.data - mean) / np.sqrt(var + self.eps)
+
+        out_data = self.gamma.data * x_norm_data + self.beta.data
+        out = Tensor(out_data, requires_grad=True, _children=(x, self.gamma, self.beta), _op='layernorm')
+
         def _backward():
-            if self.requires_grad:
-                self.grad += (power * self.data ** (power - 1)) * out.grad
+            N = x.data.shape[-1]
+            dout = out.grad
+
+            sum_axes = tuple(range(len(dout.shape) - 1))
+            dgamma = np.sum(dout * x_norm_data, axis=sum_axes, keepdims=True)
+            dbeta = np.sum(dout, axis=sum_axes, keepdims=True)
+
+            if self.gamma.requires_grad:
+                self.gamma.grad += _reduce_grad(dgamma, self.gamma.data.shape)
+            if self.beta.requires_grad:
+                self.beta.grad += _reduce_grad(dbeta, self.beta.data.shape)
+
+            if x.requires_grad:
+                dx_norm = dout * self.gamma.data
+                std_inv = 1.0 / np.sqrt(var + self.eps)
+                dx = (1.0 / N) * std_inv * (
+                    N * dx_norm - np.sum(dx_norm, axis=-1, keepdims=True) -
+                    x_norm_data * np.sum(dx_norm * x_norm_data, axis=-1, keepdims=True)
+                )
+                x.grad += dx
+
         out._backward = _backward
         return out
 
-    def __neg__(self):
-        return self * Tensor(np.full_like(self.data, -1.0))
+    def parameters(self) -> List[Tensor]:
+        return [self.gamma, self.beta]
 
-    def __sub__(self, other):
-        return self + (-other)
 
-    def __rsub__(self, other):
-        return (-self) + other
+class Dropout(Layer):
+    """Dropout Regularization."""
+    def __init__(self, p: float = 0.1):
+        super().__init__()
+        self.p = p
 
-    def __radd__(self, other):
-        return self + other
+    def forward(self, x: Tensor) -> Tensor:
+        if not self.training or self.p == 0:
+            return x
+        mask = (np.random.rand(*x.data.shape) > self.p).astype(np.float64)
+        scale = 1.0 / (1.0 - self.p)
+        out = Tensor(x.data * mask * scale, requires_grad=x.requires_grad,
+                     _children=(x,), _op='dropout')
 
-    def __rmul__(self, other):
-        return self * other
-
-    def __truediv__(self, other):
-        if isinstance(other, Tensor):
-            return self * (other ** -1)
-        return self * (1.0 / other)
-
-    def __rtruediv__(self, other):
-        return Tensor(np.full_like(self.data, other)) * (self ** -1)
-
-    def __getitem__(self, idx):
-        out = Tensor(self.data[idx], requires_grad=self.requires_grad,
-                     _children=(self,), _op='getitem')
         def _backward():
-            if self.requires_grad:
-                grad = np.zeros_like(self.data)
-                grad[idx] = out.grad
-                self.grad += grad
+            if x.requires_grad:
+                x.grad += out.grad * mask * scale
+
         out._backward = _backward
         return out
 
-    def exp(self):
-        clipped = np.clip(self.data, -500, 500)
-        out = Tensor(np.exp(clipped), requires_grad=self.requires_grad,
-                     _children=(self,), _op='exp')
+
+class MultiHeadAttention(Layer):
+    """Multi-Head Attention Mechanism."""
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+        super().__init__()
+        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.d_k = d_model // n_heads
+
+        self.W_q = Linear(d_model, d_model)
+        self.W_k = Linear(d_model, d_model)
+        self.W_v = Linear(d_model, d_model)
+        self.W_o = Linear(d_model, d_model)
+        self.dropout = Dropout(dropout)
+
+    def forward(self, x: Tensor, mask: Optional[np.ndarray] = None) -> Tensor:
+        batch_size = x.data.shape[0] if len(x.data.shape) == 3 else 1
+        seq_len = x.data.shape[-2]
+
+        Q = self.W_q(x)
+        K = self.W_k(x)
+        V = self.W_v(x)
+
+        def reshape_heads(t_data: np.ndarray) -> np.ndarray:
+            return t_data.reshape(batch_size, seq_len, self.n_heads, self.d_k).transpose(0, 2, 1, 3)
+
+        q = reshape_heads(Q.data)
+        k = reshape_heads(K.data)
+        v = reshape_heads(V.data)
+
+        scale = np.sqrt(self.d_k)
+        scores = (q @ k.transpose(0, 1, 3, 2)) / scale
+
+        # Causal mask for autoregressive generation
+        causal_mask = np.triu(np.ones((seq_len, seq_len)), k=1)
+        scores = scores + causal_mask * (-1e9)
+
+        scores_shifted = scores - np.max(scores, axis=-1, keepdims=True)
+        exp_scores = np.exp(scores_shifted)
+        attn_weights = exp_scores / (np.sum(exp_scores, axis=-1, keepdims=True) + 1e-12)
+
+        attn_output = attn_weights @ v
+        attn_output_merged = attn_output.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.d_model)
+
+        attn_tensor = Tensor(attn_output_merged, requires_grad=True,
+                             _children=(Q, K, V), _op='attention')
+
         def _backward():
-            if self.requires_grad:
-                self.grad += out.data * out.grad
-        out._backward = _backward
+            dout = attn_tensor.grad.reshape(batch_size, seq_len, self.n_heads, self.d_k).transpose(0, 2, 1, 3)
+
+            dv = attn_weights.transpose(0, 1, 3, 2) @ dout
+            dattn = dout @ v.transpose(0, 1, 3, 2)
+
+            ds = attn_weights * (dattn - np.sum(dattn * attn_weights, axis=-1, keepdims=True))
+            ds = ds / scale
+
+            dq = ds @ k
+            dk = ds.transpose(0, 1, 3, 2) @ q
+
+            dq_merged = dq.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.d_model)
+            dk_merged = dk.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.d_model)
+            dv_merged = dv.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.d_model)
+
+            if Q.requires_grad:
+                Q.grad += dq_merged
+            if K.requires_grad:
+                K.grad += dk_merged
+            if V.requires_grad:
+                V.grad += dv_merged
+
+        attn_tensor._backward = _backward
+        out = self.W_o(attn_tensor)
         return out
 
-    def log(self):
-        out = Tensor(np.log(self.data + 1e-12), requires_grad=self.requires_grad,
-                     _children=(self,), _op='log')
+    def parameters(self) -> List[Tensor]:
+        return (self.W_q.parameters() + self.W_k.parameters() +
+                self.W_v.parameters() + self.W_o.parameters())
+
+
+class FeedForward(Layer):
+    """Position-wise Feed-Forward Network."""
+    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        self.linear1 = Linear(d_model, d_ff)
+        self.linear2 = Linear(d_ff, d_model)
+        self.dropout = Dropout(dropout)
+
+    def forward(self, x: Tensor) -> Tensor:
+        h = self.linear1(x)
+        h_data = h.data
+        gelu_data = 0.5 * h_data * (1.0 + np.tanh(
+            np.sqrt(2.0 / np.pi) * (h_data + 0.044715 * h_data ** 3)
+        ))
+        out = Tensor(gelu_data, requires_grad=True, _children=(h,), _op='gelu')
+
         def _backward():
-            if self.requires_grad:
-                self.grad += (1.0 / (self.data + 1e-12)) * out.grad
+            if h.requires_grad:
+                x_val = h.data
+                cdf = 0.5 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (x_val + 0.044715 * x_val ** 3)))
+                pdf = np.exp(-0.5 * x_val ** 2) / np.sqrt(2.0 * np.pi)
+                h.grad += out.grad * (cdf + x_val * pdf)
+
         out._backward = _backward
+        out = self.dropout(out)
+        out = self.linear2(out)
         return out
 
-    def tanh(self):
-        t = np.tanh(self.data)
-        out = Tensor(t, requires_grad=self.requires_grad, _children=(self,), _op='tanh')
-        def _backward():
-            if self.requires_grad:
-                self.grad += (1 - t ** 2) * out.grad
-        out._backward = _backward
-        return out
+    def parameters(self) -> List[Tensor]:
+        return self.linear1.parameters() + self.linear2.parameters()
 
-    def relu(self):
-        out = Tensor(np.maximum(0, self.data), requires_grad=self.requires_grad,
-                     _children=(self,), _op='relu')
-        def _backward():
-            if self.requires_grad:
-                self.grad += (self.data > 0).astype(np.float64) * out.grad
-        out._backward = _backward
-        return out
 
-    def sigmoid(self):
-        clipped = np.clip(self.data, -500, 500)
-        s = 1.0 / (1.0 + np.exp(-clipped))
-        out = Tensor(s, requires_grad=self.requires_grad, _children=(self,), _op='sigmoid')
-        def _backward():
-            if self.requires_grad:
-                self.grad += s * (1 - s) * out.grad
-        out._backward = _backward
-        return out
+class TransformerBlock(Layer):
+    """Transformer Decoder Block."""
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
+        self.ff = FeedForward(d_model, d_ff, dropout)
+        self.ln1 = LayerNorm(d_model)
+        self.ln2 = LayerNorm(d_model)
+        self.dropout1 = Dropout(dropout)
+        self.dropout2 = Dropout(dropout)
 
-    def softmax(self, axis=-1):
-        shifted = self.data - np.max(self.data, axis=axis, keepdims=True)
-        exp_vals = np.exp(shifted)
-        sm = exp_vals / np.sum(exp_vals, axis=axis, keepdims=True)
-        out = Tensor(sm, requires_grad=self.requires_grad, _children=(self,), _op='softmax')
-        def _backward():
-            if self.requires_grad:
-                g = out.grad
-                dot = np.sum(g * sm, axis=axis, keepdims=True)
-                self.grad += sm * (g - dot)
-        out._backward = _backward
-        return out
+    def forward(self, x: Tensor) -> Tensor:
+        normed = self.ln1(x)
+        attn_out = self.attention(normed)
+        attn_out = self.dropout1(attn_out)
+        h1 = x + attn_out
 
-    def backward(self):
-        """Run reverse-mode automatic differentiation."""
-        topo = []
-        visited = set()
-        def build_topo(v):
-            if v not in visited:
-                visited.add(v)
-                for child in v._prev:
-                    build_topo(child)
-                topo.append(v)
-        build_topo(self)
+        normed2 = self.ln2(h1)
+        ff_out = self.ff(normed2)
+        ff_out = self.dropout2(ff_out)
+        h2 = h1 + ff_out
+        return h2
 
-        self.grad = np.ones_like(self.data)
-        for v in reversed(topo):
-            v._backward()
+    def parameters(self) -> List[Tensor]:
+        return (self.attention.parameters() + self.ff.parameters() +
+                self.ln1.parameters() + self.ln2.parameters())
 
-    def zero_grad(self):
-        self.grad = np.zeros_like(self.data)
+    def train(self):
+        self.training = True
+        self.dropout1.training = True
+        self.dropout2.training = True
+        self.attention.dropout.training = True
+        self.ff.dropout.training = True
 
-    def detach(self):
-        return Tensor(self.data.copy())
-
-    def numpy(self):
-        return self.data.copy()
-
-    def __repr__(self):
-        return f"Tensor({self.data}, grad={self.requires_grad})"
-
-    def __len__(self):
-        return len(self.data)
-
-    @staticmethod
-    def zeros(*shape, requires_grad=False):
-        return Tensor(np.zeros(shape), requires_grad=requires_grad)
-
-    @staticmethod
-    def ones(*shape, requires_grad=False):
-        return Tensor(np.ones(shape), requires_grad=requires_grad)
-
-    @staticmethod
-    def randn(*shape, requires_grad=False):
-        return Tensor(np.random.randn(*shape), requires_grad=requires_grad)
-
-    @staticmethod
-    def xavier_uniform(fan_in, fan_out, requires_grad=True):
-        limit = np.sqrt(6.0 / (fan_in + fan_out))
-        data = np.random.uniform(-limit, limit, (fan_in, fan_out))
-        return Tensor(data, requires_grad=requires_grad)
-
-    @staticmethod
-    def he_normal(fan_in, fan_out, requires_grad=True):
-        std = np.sqrt(2.0 / fan_in)
-        data = np.random.randn(fan_in, fan_out) * std
-        return Tensor(data, requires_grad=requires_grad)
+    def eval(self):
+        self.training = False
+        self.dropout1.training = False
+        self.dropout2.training = False
+        self.attention.dropout.training = False
+        self.ff.dropout.training = False
