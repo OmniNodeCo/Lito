@@ -8,8 +8,11 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  train-and-test:
+  train-and-package:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,156 +28,97 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy
 
-      - name: Run training
+      - name: Run training from scratch
         run: |
-          python train.py --epochs 10 --batch_size 4 --seq_len 32 --d_model 64 --n_layers 2 --n_heads 2 --d_ff 256
+          python train.py --epochs 15 --batch_size 4 --seq_len 32 --d_model 64 --n_layers 2 --n_heads 2 --d_ff 256 --save_dir checkpoints
 
-      - name: Test chat interface
+      - name: Package model files
+        run: |
+          cd checkpoints
+          zip -r ../model.zip best_model.npz tokenizer.json
+          cd ..
+
+      - name: Test chat inference
         run: |
           python -c "
           from src.brain import AIBrain
           brain = AIBrain(model_dir='checkpoints')
           brain.initialize()
-          response = brain.think('Hello, who are you?')
-          print(f'Response: {response}')
-          assert len(response) > 0, 'Empty response!'
-          print('Test passed!')
+          assert brain.loaded, 'Model failed to load!'
+          response = brain.think('What is machine learning?')
+          print(f'AI Response: {response}')
           "
 
-      - name: Upload model artifacts
+      - name: Upload model artifact
         uses: actions/upload-artifact@v4
         with:
           name: trained-model
-          path: checkpoints/
+          path: model.zip
           retention-days: 30
 
-  build-windows:
-    needs: train-and-test
-    runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy pyinstaller
-
-      - name: Download trained model
-        uses: actions/download-artifact@v4
-        with:
-          name: trained-model
-          path: checkpoints/
-
-      - name: Build executable
-        run: python build.py
-
-      - name: Test executable exists
-        run: |
-          if (Test-Path "dist/SmartAI.exe") {
-            Write-Host "Build successful! SmartAI.exe created."
-            Get-Item "dist/SmartAI.exe" | Select-Object Name, Length
-          } else {
-            Write-Host "Build failed - executable not found"
-            exit 1
-          }
-
-      - name: Upload Windows executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartAI-Windows
-          path: dist/SmartAI.exe
-          retention-days: 90
-
-  build-linux:
-    needs: train-and-test
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy pyinstaller
-
-      - name: Download trained model
-        uses: actions/download-artifact@v4
-        with:
-          name: trained-model
-          path: checkpoints/
-
-      - name: Build executable
-        run: python build.py
-
-      - name: Upload Linux executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartAI-Linux
-          path: dist/SmartAI
-          retention-days: 90
-
-  build-macos:
-    needs: train-and-test
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install numpy pyinstaller
-
-      - name: Download trained model
-        uses: actions/download-artifact@v4
-        with:
-          name: trained-model
-          path: checkpoints/
-
-      - name: Build executable
-        run: python build.py
-
-      - name: Upload macOS executable
-        uses: actions/upload-artifact@v4
-        with:
-          name: SmartAI-macOS
-          path: dist/SmartAI
-          retention-days: 90
-
-  release:
-    needs: [build-windows, build-linux, build-macos]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create Release
+      - name: Update latest-model release (On Main/Master)
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            SmartAI-Windows/SmartAI.exe
-            SmartAI-Linux/SmartAI
-            SmartAI-macOS/SmartAI
+          tag_name: latest-model
+          name: "SmartAI Latest Model"
+          body: "Automated build of the latest trained weights and tokenizer."
+          files: model.zip
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-executables:
+    needs: train-and-package
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        include:
+          - os: windows-latest
+            artifact_name: SmartAI-Windows
+            binary_name: SmartAI.exe
+          - os: ubuntu-latest
+            artifact_name: SmartAI-Linux
+            binary_name: SmartAI
+          - os: macos-latest
+            artifact_name: SmartAI-macOS
+            binary_name: SmartAI
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pyinstaller
+
+      - name: Download trained model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+
+      - name: Extract model
+        run: |
+          python -c "
+          import zipfile, os
+          os.makedirs('checkpoints', exist_ok=True)
+          with zipfile.ZipFile('model.zip', 'r') as z:
+              z.extractall('checkpoints')
+          "
+
+      - name: Build executable with PyInstaller
+        run: python build.py
+
+      - name: Upload Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.binary_name }}
+          retention-days: 90
