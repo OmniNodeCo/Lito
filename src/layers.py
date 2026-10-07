@@ -68,14 +68,14 @@ class Embedding(Layer):
             idx = np.array(indices, dtype=int)
 
         embedded = self.weight.data[idx]
-        out = Tensor(embedded, requires_grad=True, _children=(self.weight,), _op='embedding')
+        emb_out = Tensor(embedded, requires_grad=True, _children=(self.weight,), _op='embedding')
 
         def _backward():
             if self.weight.requires_grad:
-                np.add.at(self.weight.grad, idx, out.grad)
+                np.add.at(self.weight.grad, idx, emb_out.grad)
 
-        out._backward = _backward
-        return out
+        emb_out._backward = _backward
+        return emb_out
 
     def parameters(self) -> List[Tensor]:
         return [self.weight]
@@ -95,11 +95,11 @@ class LayerNorm(Layer):
         x_norm_data = (x.data - mean) / np.sqrt(var + self.eps)
 
         out_data = self.gamma.data * x_norm_data + self.beta.data
-        out = Tensor(out_data, requires_grad=True, _children=(x, self.gamma, self.beta), _op='layernorm')
+        ln_out = Tensor(out_data, requires_grad=True, _children=(x, self.gamma, self.beta), _op='layernorm')
 
         def _backward():
             N = x.data.shape[-1]
-            dout = out.grad
+            dout = ln_out.grad
 
             sum_axes = tuple(range(len(dout.shape) - 1))
             dgamma = np.sum(dout * x_norm_data, axis=sum_axes, keepdims=True)
@@ -119,8 +119,8 @@ class LayerNorm(Layer):
                 )
                 x.grad += dx
 
-        out._backward = _backward
-        return out
+        ln_out._backward = _backward
+        return ln_out
 
     def parameters(self) -> List[Tensor]:
         return [self.gamma, self.beta]
@@ -137,19 +137,19 @@ class Dropout(Layer):
             return x
         mask = (np.random.rand(*x.data.shape) > self.p).astype(np.float64)
         scale = 1.0 / (1.0 - self.p)
-        out = Tensor(x.data * mask * scale, requires_grad=x.requires_grad,
-                     _children=(x,), _op='dropout')
+        drop_out = Tensor(x.data * mask * scale, requires_grad=x.requires_grad,
+                          _children=(x,), _op='dropout')
 
         def _backward():
             if x.requires_grad:
-                x.grad += out.grad * mask * scale
+                x.grad += drop_out.grad * mask * scale
 
-        out._backward = _backward
-        return out
+        drop_out._backward = _backward
+        return drop_out
 
 
 class MultiHeadAttention(Layer):
-    """Multi-Head Attention Mechanism."""
+    """Multi-Head Self-Attention Mechanism."""
     def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -181,7 +181,7 @@ class MultiHeadAttention(Layer):
         scale = np.sqrt(self.d_k)
         scores = (q @ k.transpose(0, 1, 3, 2)) / scale
 
-        # Causal mask for autoregressive generation
+        # Causal mask
         causal_mask = np.triu(np.ones((seq_len, seq_len)), k=1)
         scores = scores + causal_mask * (-1e9)
 
@@ -241,18 +241,18 @@ class FeedForward(Layer):
         gelu_data = 0.5 * h_data * (1.0 + np.tanh(
             np.sqrt(2.0 / np.pi) * (h_data + 0.044715 * h_data ** 3)
         ))
-        out = Tensor(gelu_data, requires_grad=True, _children=(h,), _op='gelu')
+        gelu_tensor = Tensor(gelu_data, requires_grad=True, _children=(h,), _op='gelu')
 
         def _backward():
             if h.requires_grad:
                 x_val = h.data
                 cdf = 0.5 * (1.0 + np.tanh(np.sqrt(2.0 / np.pi) * (x_val + 0.044715 * x_val ** 3)))
                 pdf = np.exp(-0.5 * x_val ** 2) / np.sqrt(2.0 * np.pi)
-                h.grad += out.grad * (cdf + x_val * pdf)
+                h.grad += gelu_tensor.grad * (cdf + x_val * pdf)
 
-        out._backward = _backward
-        out = self.dropout(out)
-        out = self.linear2(out)
+        gelu_tensor._backward = _backward
+        drop_tensor = self.dropout(gelu_tensor)
+        out = self.linear2(drop_tensor)
         return out
 
     def parameters(self) -> List[Tensor]:
@@ -271,8 +271,8 @@ class TransformerBlock(Layer):
         self.dropout2 = Dropout(dropout)
 
     def forward(self, x: Tensor) -> Tensor:
-        normed = self.ln1(x)
-        attn_out = self.attention(normed)
+        normed1 = self.ln1(x)
+        attn_out = self.attention(normed1)
         attn_out = self.dropout1(attn_out)
         h1 = x + attn_out
 
