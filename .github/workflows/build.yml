@@ -28,6 +28,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install numpy
 
+      - name: Run feature tests (dictionary, NLP, search parsing)
+        run: python tests/test_features.py
+
       - name: Run training from scratch
         run: |
           python train.py --epochs 15 --batch_size 4 --seq_len 32 --d_model 64 --n_layers 2 --n_heads 2 --d_ff 256 --save_dir checkpoints

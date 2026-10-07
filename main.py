@@ -85,6 +85,10 @@ def main():
     parser.add_argument('--dir', type=str, default='checkpoints', help='Model checkpoints directory')
     parser.add_argument('--epochs', type=int, default=30, help='Training epochs if training locally')
     parser.add_argument('--chat-only', action='store_true', help='Skip check and use knowledge base only')
+    parser.add_argument('--no-search', '--offline', dest='no_search', action='store_true',
+                        help='Disable live web search (dictionary and knowledge base still work offline)')
+    parser.add_argument('--no-online-dictionary', action='store_true',
+                        help='Disable online definition enrichment (offline WordNet still works)')
     args = parser.parse_args()
 
     # Step 1: Handle manual download flag
@@ -108,7 +112,9 @@ def main():
 
     # Step 4: Start Chat Interface
     from src.chat import ChatInterface
-    chat = ChatInterface(model_dir=args.dir)
+    chat = ChatInterface(model_dir=args.dir,
+                         search_enabled=not args.no_search,
+                         dictionary_online=not args.no_online_dictionary)
     chat.start()
 
 

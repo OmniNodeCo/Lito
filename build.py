@@ -80,12 +80,12 @@ def build():
     if config.get('icon') and os.path.exists(str(config['icon'])):
         cmd.extend(['--icon', str(config['icon'])])
 
-    # Add source files
-    cmd.extend(['--add-data', f'src{os.pathsep}src'])
-
-    # Add checkpoints if they exist
-    if os.path.exists('checkpoints'):
-        cmd.extend(['--add-data', f'checkpoints{os.pathsep}checkpoints'])
+    # Add data directories listed in extra_data (src, checkpoints, dictionary
+    # data, ...) - each is bundled next to the executable
+    for data_dir in config.get('extra_data', ['checkpoints', 'src']):
+        data_dir = str(data_dir)
+        if os.path.exists(data_dir) and os.path.isdir(data_dir):
+            cmd.extend(['--add-data', f'{data_dir}{os.pathsep}{data_dir}'])
 
     # Hidden imports
     for imp in config.get('hidden_imports', []):

@@ -17,7 +17,7 @@ console: true
 # icon: assets/icon.ico
 
 # Additional data directories to include
-extra_data: [checkpoints, src]
+extra_data: [checkpoints, src, data]
 
 # Hidden imports that PyInstaller might miss
 hidden_imports: [numpy, json, re, os, sys, time, argparse]

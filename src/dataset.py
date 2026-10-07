@@ -114,8 +114,11 @@ class TrainingData:
             sentences = text.split('. ')
             if len(sentences) > 1:
                 for i in range(len(sentences)):
-                    if len(sentences[i].strip()) > 20:
-                        augmented.append(sentences[i].strip() + '.')
+                    sentence = sentences[i].strip()
+                    if len(sentence) > 20:
+                        # Keep exactly one trailing period
+                        sentence = sentence.rstrip('.') + '.'
+                        augmented.append(sentence)
 
         return augmented
 

@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# Model checkpoints (trained locally or downloaded from releases)
+checkpoints/
+
+# Runtime caches (web search / online dictionary API responses)
+data/cache/
+
+# Build artifacts
+build/
+dist/
+*.spec
