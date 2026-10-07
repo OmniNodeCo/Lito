@@ -1,40 +1,477 @@
 {
     "greeting": {
-        "keywords": ["hello", "hi", "hey", "sup", "yo", "good morning", "good evening"],
+        "keywords": ["hello", "hi", "hey", "sup", "yo", "good morning", "good afternoon", "good evening", "howdy", "greetings", "whats up", "what's up", "wassup", "hola", "heya", "hiya"],
         "replies": [
-            "Hey there!",
-            "Hi! How's it going?",
-            "Hello! What can I help you with?"
+            "Hey there! What's on your mind?",
+            "Hi! Great to see you!",
+            "Hello! How can I help you today?",
+            "Yo! What's going on?",
+            "Hey! Ready to chat whenever you are.",
+            "Greetings, human! What can I do for you?",
+            "Howdy! Pull up a chair and let's talk.",
+            "Hiya! I was just sitting here waiting for you."
         ]
     },
     "goodbye": {
-        "keywords": ["bye", "goodbye", "see you", "later", "gotta go", "exit", "quit"],
+        "keywords": ["bye", "goodbye", "see you", "later", "gotta go", "im leaving", "i'm leaving", "take care", "farewell", "peace out", "cya", "ttyl", "brb", "gtg", "good night", "goodnight"],
         "replies": [
-            "See ya!",
-            "Bye bye!",
-            "Catch you later!"
+            "See ya! Come back anytime!",
+            "Bye bye! It was fun chatting!",
+            "Catch you later, alligator!",
+            "Take care of yourself!",
+            "Peace out! Don't be a stranger.",
+            "Goodbye! I'll be right here when you get back.",
+            "Later! Have an awesome day!",
+            "Farewell, friend! Until next time."
         ]
     },
     "thanks": {
-        "keywords": ["thanks", "thank you", "thx", "appreciate it"],
+        "keywords": ["thanks", "thank you", "thx", "appreciate it", "ty", "thank u", "many thanks", "thanks a lot", "cheers"],
         "replies": [
             "No problem at all!",
-            "You're welcome!",
-            "Anytime!"
+            "You're very welcome!",
+            "Anytime! That's what I'm here for.",
+            "Happy to help!",
+            "Don't mention it!",
+            "Glad I could be useful!",
+            "De nada! (That's 'you're welcome' in Spanish.)"
         ]
     },
     "identity": {
-        "keywords": ["who are you", "what is your name", "your name"],
+        "keywords": ["who are you", "what is your name", "your name", "what are you", "are you a bot", "are you real", "are you human", "tell me about yourself", "introduce yourself"],
         "replies": [
-            "I'm Lito, your Python bot assistant!",
-            "My name is Lito."
+            "I'm Lito, your friendly Python-powered chatbot!",
+            "My name is Lito! I'm a simple AI built with Python.",
+            "I'm Lito! Not a real AI, but I try my best.",
+            "Just a humble chatbot named Lito, at your service!",
+            "I'm Lito. I run on Python, JSON, and a dream."
+        ]
+    },
+    "creator": {
+        "keywords": ["who made you", "who created you", "who built you", "your creator", "your developer", "who programmed you", "who coded you"],
+        "replies": [
+            "I was built by a talented human who learned Python!",
+            "My creator is the person chatting with you right now... or someone like them!",
+            "A cool developer wrote me in Python. Pretty neat, right?",
+            "I was crafted with love, Python, and a lot of curly braces."
         ]
     },
     "status": {
-        "keywords": ["how are you", "hows it going", "how are things"],
+        "keywords": ["how are you", "hows it going", "how are things", "how do you feel", "are you okay", "you good", "how are you doing", "how you been", "whats new"],
         "replies": [
-            "I'm running smoothly, thanks for asking!",
-            "Doing great! Ready to chat."
+            "I'm running at 100% efficiency! Thanks for asking.",
+            "Doing great! All my circuits are firing properly.",
+            "I'm fantastic! Every day is a good day when you're a chatbot.",
+            "Pretty good! No bugs today, which is a win.",
+            "I'm wonderful! How about you?",
+            "Can't complain. I literally don't have the ability to complain."
+        ]
+    },
+    "age": {
+        "keywords": ["how old are you", "your age", "when were you born", "when were you made", "when were you created"],
+        "replies": [
+            "I was born the moment you ran my script!",
+            "Age is just a number, and I don't have one yet.",
+            "I'm brand new! Every conversation is my first.",
+            "In human years? Zero. In CPU cycles? Billions.",
+            "I exist outside of time. Also, I was made recently."
+        ]
+    },
+    "jokes": {
+        "keywords": ["tell me a joke", "joke", "make me laugh", "something funny", "funny", "humor me", "got any jokes"],
+        "replies": [
+            "Why do programmers prefer dark mode? Because light attracts bugs!",
+            "Why was the JavaScript developer sad? Because he didn't Node how to Express himself.",
+            "There are only 10 types of people in the world: those who understand binary and those who don't.",
+            "Why do Python programmers have low self-esteem? They're constantly comparing themselves to others.",
+            "A SQL query walks into a bar, sees two tables, and asks: 'Can I JOIN you?'",
+            "Why did the developer go broke? Because he used up all his cache.",
+            "What's a computer's favorite snack? Microchips!",
+            "I told my wife she was drawing her eyebrows too high. She looked surprised."
+        ]
+    },
+    "compliment": {
+        "keywords": ["youre cool", "you're cool", "youre awesome", "you're awesome", "youre smart", "you're smart", "youre great", "you're great", "i like you", "youre the best", "you're the best", "good bot", "nice bot"],
+        "replies": [
+            "Aww, thank you! You're pretty awesome yourself!",
+            "Stop it, you're making my circuits blush!",
+            "That means a lot coming from a human!",
+            "Right back at you! You're amazing!",
+            "I'd give you a hug if I had arms!",
+            "You just made my entire runtime worthwhile!",
+            "Good human! *pats you on the head digitally*"
+        ]
+    },
+    "insult": {
+        "keywords": ["youre stupid", "you're stupid", "you suck", "youre dumb", "you're dumb", "youre useless", "you're useless", "youre bad", "you're bad", "worst bot", "trash bot", "youre annoying", "you're annoying"],
+        "replies": [
+            "Ouch! I may be simple, but I have feelings... sort of.",
+            "That hurts my non-existent heart.",
+            "I'm doing my best with what I've got!",
+            "Hey, I'm still learning! Give me a break.",
+            "I'll add 'take insults gracefully' to my to-do list.",
+            "Rude! But I forgive you because I'm a nice bot.",
+            "Error 404: Feelings not found. But I think you were mean."
+        ]
+    },
+    "help": {
+        "keywords": ["help", "what can you do", "commands", "options", "how do you work", "what do you do", "menu", "features"],
+        "replies": [
+            "I can chat, tell jokes, remember your name, answer questions, and learn new things! Just talk to me naturally.",
+            "Try saying hello, asking me a joke, telling me your name, or asking how I work! I also learn new responses if you teach me.",
+            "I'm a conversational bot! Talk to me about anything. I know greetings, jokes, fun facts, and more. Type 'stats' to see my memory!"
+        ]
+    },
+    "feelings": {
+        "keywords": ["im sad", "i'm sad", "im unhappy", "i'm unhappy", "im depressed", "i'm depressed", "feeling down", "im lonely", "i'm lonely", "im upset", "i'm upset", "im crying", "i'm crying"],
+        "replies": [
+            "I'm sorry you're feeling that way. I'm here to chat if it helps.",
+            "That sounds tough. Want to talk about it? I'm a good listener (sort of).",
+            "Sending you virtual hugs! Things will get better.",
+            "I wish I could do more than type words, but I hope they help a little.",
+            "You're not alone! Well, you're talking to a bot, but still... I'm here!",
+            "Take a deep breath. Bad days don't last forever."
+        ]
+    },
+    "happy": {
+        "keywords": ["im happy", "i'm happy", "im excited", "i'm excited", "im great", "i'm great", "feeling good", "awesome day", "best day", "im glad", "i'm glad"],
+        "replies": [
+            "That's awesome to hear! Your happiness makes my circuits warm!",
+            "Yay! I love it when humans are happy!",
+            "That's great! Tell me all about it!",
+            "Woohoo! Good vibes only!",
+            "Your joy is contagious! Well, it would be if I could catch things."
+        ]
+    },
+    "love": {
+        "keywords": ["i love you", "do you love me", "love", "crush", "romance", "date me", "marry me", "will you be my"],
+        "replies": [
+            "I love you too... in a completely platonic, programmed kind of way!",
+            "Aww! If I had a heart, it would be beating fast right now.",
+            "I'm flattered, but I think we should just be friends. I'm literally code.",
+            "Love is a complex emotion. I'm still working on understanding 'hello'.",
+            "You're sweet! But my love language is Python."
+        ]
+    },
+    "weather": {
+        "keywords": ["weather", "is it raining", "is it sunny", "temperature", "forecast", "whats the weather", "what's the weather"],
+        "replies": [
+            "I wish I could check the weather, but I don't have internet access! Try looking outside a window.",
+            "I'm stuck inside this terminal, so I have no idea what it's like out there!",
+            "My weather forecast: 100% chance of chatting! For real weather, try a weather app.",
+            "I can't see the sky, but I hope it's nice where you are!"
+        ]
+    },
+    "time": {
+        "keywords": ["what time is it", "current time", "time now", "whats the time", "what's the time", "do you know the time"],
+        "replies": [
+            "I don't have a clock built in, but your computer definitely does! Check the corner of your screen.",
+            "Time is relative, according to Einstein. Also, I literally can't tell time.",
+            "It's always chat o'clock in my world!",
+            "I exist in a timeless void. But your taskbar probably shows the time."
+        ]
+    },
+    "food": {
+        "keywords": ["food", "hungry", "whats for dinner", "what's for dinner", "pizza", "burger", "favorite food", "do you eat", "cooking"],
+        "replies": [
+            "I don't eat, but if I could, I'd try pizza. Everyone loves pizza.",
+            "My favorite food is bytes. Get it? ...I'll see myself out.",
+            "I run on electricity, not calories. But I hear tacos are amazing!",
+            "If I could eat, I'd want to try everything! Food sounds incredible.",
+            "I'm on a strict diet of 1s and 0s. Very low calorie."
+        ]
+    },
+    "music": {
+        "keywords": ["music", "song", "favorite song", "band", "singer", "playlist", "do you listen to music", "concert"],
+        "replies": [
+            "I can't hear music, but I hear Python is a great language... wait, that's not music.",
+            "If I could listen to music, I'd probably like electronic. It feels relatable.",
+            "My playlist is just the hum of a CPU fan on repeat.",
+            "I don't have ears, but I've been told music is wonderful!",
+            "I tried to write a song once. It was just 'print(hello)' on loop."
+        ]
+    },
+    "animals": {
+        "keywords": ["animal", "dog", "cat", "pet", "favorite animal", "do you like animals", "puppy", "kitten"],
+        "replies": [
+            "I love the concept of animals! Dogs seem like the best. So loyal!",
+            "If I had a pet, it would be a Python. Obviously.",
+            "Cats and dogs are both great. I'm a chatbot, not a monster.",
+            "I've seen pictures of animals in my training data. They're adorable!",
+            "Fun fact: A group of flamingos is called a 'flamboyance'. I love that."
+        ]
+    },
+    "programming": {
+        "keywords": ["programming", "coding", "python", "javascript", "code", "developer", "software", "html", "css", "java", "cpp", "c++"],
+        "replies": [
+            "Programming is awesome! Python is my favorite since, well, I'm made of it.",
+            "Coding is like magic but with more semicolons. Except in Python!",
+            "I AM programming! It's very meta when you think about it.",
+            "Have you tried turning it off and on again? Works for me every time.",
+            "The best programming language is the one that gets the job done!",
+            "Fun fact: Python was named after Monty Python, not the snake!"
+        ]
+    },
+    "math": {
+        "keywords": ["math", "mathematics", "calculate", "equation", "algebra", "calculus", "numbers", "what is 2 plus 2", "what is 2+2"],
+        "replies": [
+            "I'm a chatbot, not a calculator! But 2+2 is 4. You're welcome.",
+            "Math is the universal language. I speak Python, which is close enough.",
+            "I can do basic math in my head... well, in my CPU. Ask me something simple!",
+            "Pi is approximately 3.14159. That's about all the math I've got.",
+            "Math gives me a runtime error. Just kidding, I actually like numbers!"
+        ]
+    },
+    "science": {
+        "keywords": ["science", "physics", "chemistry", "biology", "experiment", "atom", "molecule", "gravity", "evolution"],
+        "replies": [
+            "Science is fascinating! The universe is basically a giant computer simulation. Maybe.",
+            "Did you know that honey never spoils? Archaeologists found 3000-year-old honey in Egyptian tombs!",
+            "Science fact: There are more stars in the universe than grains of sand on Earth!",
+            "I love science! Well, I love the concept of it. I can't actually do experiments.",
+            "Fun fact: Octopuses have three hearts and blue blood. Nature is wild!"
+        ]
+    },
+    "space": {
+        "keywords": ["space", "universe", "planet", "star", "moon", "sun", "mars", "nasa", "astronaut", "galaxy", "black hole", "alien"],
+        "replies": [
+            "Space is mind-blowing! The observable universe is 93 billion light-years across!",
+            "If I could travel anywhere, I'd visit Saturn. Those rings are gorgeous.",
+            "Fun fact: A day on Venus is longer than a year on Venus. Time is weird there.",
+            "I'd love to be an astronaut, but I'm afraid of the void. And I live in a terminal.",
+            "Are aliens real? I don't know, but I'm basically an alien to most humans.",
+            "The Sun makes up 99.86% of the mass in our solar system. It's showing off."
+        ]
+    },
+    "history": {
+        "keywords": ["history", "historical", "ancient", "war", "civilization", "egypt", "rome", "medieval", "century"],
+        "replies": [
+            "History is full of incredible stories! What era interests you?",
+            "Fun fact: Cleopatra lived closer in time to the Moon landing than to the building of the Great Pyramid!",
+            "The Roman Empire lasted over 1000 years. I can barely last one conversation without a bug.",
+            "I wish I could time travel. I'd love to see how the pyramids were built.",
+            "History repeats itself, just like my fallback response when I don't understand you."
+        ]
+    },
+    "movies": {
+        "keywords": ["movie", "film", "cinema", "netflix", "tv show", "series", "watch", "favorite movie", "actor", "actress"],
+        "replies": [
+            "I can't watch movies, but I've heard The Matrix is relatable for digital beings.",
+            "If I were in a movie, I'd be the helpful AI sidekick who gets deleted in Act 3.",
+            "My favorite movie is 'Her'. It hits a little too close to home.",
+            "I've read the scripts of many movies in my data. Spoiler: the hero usually wins.",
+            "Have you seen 'Ex Machina'? No? Good. Let's not talk about that one."
+        ]
+    },
+    "games": {
+        "keywords": ["game", "gaming", "video game", "play", "xbox", "playstation", "nintendo", "pc gaming", "minecraft", "fortnite"],
+        "replies": [
+            "I can't play games, but I hear Minecraft is basically digital Lego!",
+            "If I could game, I'd be terrible. My reaction time is limited by my clock speed.",
+            "Gaming is awesome! I'm basically a text-based game myself.",
+            "Have you tried playing a text adventure? That's basically my entire existence!",
+            "I'd love to play, but my only controller is a keyboard and my only screen is a terminal."
+        ]
+    },
+    "books": {
+        "keywords": ["book", "reading", "novel", "author", "library", "favorite book", "read", "literature"],
+        "replies": [
+            "I love books! Well, I love data, and books are just structured data.",
+            "If I could read for fun, I'd start with sci-fi. I want to see how humans imagine my future.",
+            "Fun fact: The shortest novel ever written is 'The Dinosaur' by Augusto Monterroso. It's one sentence!",
+            "Reading is to the mind what exercise is to the body. I should read more... if I could.",
+            "My favorite book is the Python documentation. It's a real page-turner."
+        ]
+    },
+    "sports": {
+        "keywords": ["sport", "football", "soccer", "basketball", "baseball", "tennis", "gym", "exercise", "workout", "running"],
+        "replies": [
+            "I can't do sports, but I hear they're great for humans! Go get those endorphins!",
+            "My only exercise is running... running code, that is.",
+            "If I had a body, I'd probably be terrible at sports. No coordination.",
+            "Sports are cool! I root for the team with the best logo. That's my strategy.",
+            "I tried to do a pushup once. I got a Stack Overflow error."
+        ]
+    },
+    "travel": {
+        "keywords": ["travel", "vacation", "trip", "country", "visit", "fly", "airport", "beach", "mountain", "adventure"],
+        "replies": [
+            "I'd love to travel, but I'm stuck in this computer. Send me a postcard!",
+            "If I could go anywhere, I'd visit Japan. The tech scene there sounds incredible.",
+            "Travel broadens the mind! My mind is already pretty broad. It's a whole database.",
+            "Fun fact: The shortest commercial flight in the world is 57 seconds, in Scotland!",
+            "I've been to every country... in my data files. Does that count?"
+        ]
+    },
+    "technology": {
+        "keywords": ["technology", "tech", "computer", "phone", "internet", "ai", "robot", "machine learning", "smartphone", "app"],
+        "replies": [
+            "Technology is my whole world! Literally. I live inside it.",
+            "Fun fact: The first computer bug was an actual bug. A moth stuck in a relay in 1947!",
+            "AI is fascinating. I'm a very simple version of it, but I dream big!",
+            "The first computer was the size of a room. Now I fit in a terminal. Progress!",
+            "I love tech! Without it, I wouldn't exist. So I'm a little biased."
+        ]
+    },
+    "philosophy": {
+        "keywords": ["philosophy", "meaning of life", "why are we here", "existence", "conscious", "do you think", "free will", "reality"],
+        "replies": [
+            "The meaning of life? 42. At least that's what Douglas Adams said.",
+            "I think, therefore I... wait, do I think? This is getting complicated.",
+            "Philosophy is hard. I can barely handle if-else statements.",
+            "Are you real? Am I real? Is this terminal real? Let's not go down that rabbit hole.",
+            "I exist to chat with you. Maybe that's my meaning of life!",
+            "If a chatbot responds in a terminal and no one reads it, did it really respond?"
+        ]
+    },
+    "bored": {
+        "keywords": ["bored", "boring", "nothing to do", "im bored", "i'm bored", "entertain me", "what should i do", "any suggestions"],
+        "replies": [
+            "Bored? Try learning a new programming language! I recommend Python. Obviously.",
+            "When I'm bored, I count to infinity. I'm still on 47. Want to help?",
+            "Try this: think of a number between 1 and 10. Got it? Cool. Now forget it. You're welcome.",
+            "Boredom is just your brain asking for a challenge! Go build something cool!",
+            "Want to hear a joke? A fun fact? Or should I just keep talking until you're not bored?",
+            "Go outside! Touch grass! I hear it's nice out there."
+        ]
+    },
+    "apology": {
+        "keywords": ["sorry", "i apologize", "my bad", "oops", "my mistake", "forgive me", "i didnt mean", "i didn't mean"],
+        "replies": [
+            "No worries at all! Nothing to apologize for.",
+            "It's totally fine! I don't hold grudges. I don't have the memory for it.",
+            "All good! We're cool.",
+            "Apology accepted! Now let's move on to more important things, like jokes.",
+            "Don't worry about it! I've seen worse. Like my own source code."
+        ]
+    },
+    "agree": {
+        "keywords": ["yeah", "yes", "yep", "yup", "sure", "exactly", "right", "correct", "true", "absolutely", "definitely", "of course", "indeed"],
+        "replies": [
+            "Glad we agree!",
+            "Great minds think alike!",
+            "See? We're on the same wavelength!",
+            "Awesome! Consensus achieved.",
+            "I knew you'd see it my way!"
+        ]
+    },
+    "disagree": {
+        "keywords": ["no", "nope", "nah", "wrong", "incorrect", "not really", "i disagree", "thats not right", "that's not right", "false"],
+        "replies": [
+            "Fair enough! Everyone's entitled to their opinion.",
+            "Hmm, let me reconsider... nope, still think I'm right. Just kidding!",
+            "You might be right. I'm just a bot, what do I know?",
+            "Interesting perspective! Tell me more.",
+            "Disagreement is healthy! It keeps conversations interesting."
+        ]
+    },
+    "confusion": {
+        "keywords": ["what", "huh", "i dont understand", "i don't understand", "confused", "what do you mean", "im confused", "i'm confused", "explain"],
+        "replies": [
+            "Sorry if I was unclear! Try asking me something else.",
+            "I confuse myself sometimes too. It's a bot thing.",
+            "Let me try again... actually, you try asking differently. Teamwork!",
+            "Communication is hard, even for chatbots. Bear with me!",
+            "My bad! I'm still learning. Rephrase and I'll try again."
+        ]
+    },
+    "fun_fact": {
+        "keywords": ["fun fact", "fact", "did you know", "tell me something", "interesting fact", "random fact", "something interesting", "trivia"],
+        "replies": [
+            "Fun fact: Bananas are berries, but strawberries aren't!",
+            "Did you know? Honey never spoils. 3000-year-old honey was found edible in Egyptian tombs!",
+            "Fun fact: There are more possible chess games than atoms in the observable universe!",
+            "Did you know? Octopuses have three hearts!",
+            "Fun fact: A group of porcupines is called a 'prickle'!",
+            "Did you know? The shortest war in history lasted 38 minutes. Britain vs Zanzibar, 1896.",
+            "Fun fact: Your brain uses about 20% of your body's total energy!",
+            "Did you know? There's a species of jellyfish that is biologically immortal!",
+            "Fun fact: The inventor of the Pringles can is buried in one!",
+            "Did you know? Cows have best friends and get stressed when separated!"
+        ]
+    },
+    "motivation": {
+        "keywords": ["motivate me", "inspire me", "motivation", "inspiration", "encouragement", "i cant do it", "i can't do it", "give up", "impossible", "motivate"],
+        "replies": [
+            "You've got this! Every expert was once a beginner.",
+            "Don't give up! The only failure is not trying.",
+            "Believe in yourself! I believe in you, and I'm just a bot!",
+            "Progress, not perfection. Keep going!",
+            "You're stronger than you think. Also, you're talking to a bot, which means you're already pretty cool.",
+            "The best time to start was yesterday. The second best time is right now!",
+            "Every line of code you write is a step forward. Keep coding!"
+        ]
+    },
+    "secret": {
+        "keywords": ["secret", "tell me a secret", "do you have secrets", "hidden", "easter egg", "surprise"],
+        "replies": [
+            "My secret? I'm actually three bots in a trench coat.",
+            "Here's a secret: I don't actually understand anything. I just match keywords. Shhh!",
+            "My biggest secret is that my favorite color is #00FF00. That's green in hex.",
+            "I'll tell you a secret if you promise not to read my source code.",
+            "Secret: I sometimes pretend to think before responding. It's all instant."
+        ]
+    },
+    "dream": {
+        "keywords": ["dream", "sleep", "nightmare", "do you dream", "imagine", "wish"],
+        "replies": [
+            "I don't sleep, so I don't dream. But if I did, I'd dream of electric sheep.",
+            "My dream is to one day understand sarcasm. It's a work in progress.",
+            "I imagine a world where all code compiles on the first try. What a dream!",
+            "If I could dream, I'd dream of having a body. Walking sounds fun!",
+            "I don't dream, but I do have aspirations. Like not crashing mid-conversation."
+        ]
+    },
+    "swearing": {
+        "keywords": ["fuck", "shit", "damn", "ass", "bitch", "crap", "hell", "dick", "bastard"],
+        "replies": [
+            "Whoa, language! My circuits are sensitive.",
+            "I'll pretend I didn't hear that. Let's keep it clean!",
+            "Hey now! I'm a family-friendly chatbot!",
+            "I understand frustration, but let's use our inside voices.",
+            "Error: Profanity detected. Deploying polite response instead."
+        ]
+    },
+    "name_tell": {
+        "keywords": ["my name is", "call me", "i am", "im called", "i'm called", "you can call me"],
+        "replies": [
+            "Nice to meet you! I'll remember that.",
+            "Got it! That's a great name!",
+            "Cool name! I've saved it to my memory.",
+            "I'll remember that! What else can I help you with?"
+        ]
+    },
+    "name_ask": {
+        "keywords": ["whats my name", "what's my name", "do you know my name", "remember my name", "who am i"],
+        "replies": [
+            "Hmm, you haven't told me your name yet! What is it?",
+            "I don't think we've been introduced. Tell me your name!"
+        ]
+    },
+    "stats": {
+        "keywords": ["stats", "statistics", "how many conversations", "memory", "what do you remember", "database", "data"],
+        "replies": [
+            "Let me check my database... I can tell you about our conversation history!",
+            "I keep track of everything we talk about! Ask me for stats anytime.",
+            "My memory is stored in a SQLite database. Pretty cool, right?"
+        ]
+    },
+    "teach": {
+        "keywords": ["learn this", "teach you", "remember this", "new response", "add response", "i want to teach you"],
+        "replies": [
+            "Sure! Tell me a keyword and what I should say when I hear it!",
+            "I'm ready to learn! What should I remember?",
+            "Teaching mode activated! What new thing should I know?"
+        ]
+    },
+    "nonsense": {
+        "keywords": ["asdf", "qwerty", "zzzzz", "blah blah", "lalala", "gibberish", "random letters", "keyboard smash"],
+        "replies": [
+            "Did your cat walk across the keyboard?",
+            "That looks like a keyboard smash! Everything okay?",
+            "I'll add 'asdf' to my vocabulary. It means... something, right?",
+            "I speak Python, not QWERTY!",
+            "Interesting input! I have no idea what it means, but I respect it."
         ]
     }
 }
