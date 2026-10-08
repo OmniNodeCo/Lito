@@ -113,6 +113,35 @@ class AIBrain:
                 "Goodbye! It was great chatting with you.",
                 "See you later! Come back anytime.",
             ],
+            'apology': [
+                "No problem at all! Is there anything I can help you with?",
+                "No worries at all - it's completely fine. What would you like to talk about?",
+                "It's all good! I'm here whenever you need me.",
+            ],
+            'acknowledgment': [
+                "Great! Let me know if you have any questions.",
+                "Got it! Is there anything else you'd like to know?",
+                "Cool! I'm here if you need me.",
+                "Alright! What would you like to do next?",
+            ],
+            'negation': [
+                "Okay, understood. Is there something else I can help you with?",
+                "No problem! Let me know what you'd like to do instead.",
+            ],
+            'praise': [
+                "Thank you, that's very kind! I'm doing my best. What else can I help you with?",
+                "Thanks! I'm glad I could help. Anything else you'd like to know?",
+            ],
+            'idk': [
+                "That's okay! Feel free to ask me anything - I can explain "
+                "concepts, define words, or search the web for you.",
+            ],
+            'help': [
+                "Sure, I'm happy to help! You can ask me questions (like 'what "
+                "is gravity?'), ask for definitions, synonyms or spellings, or "
+                "ask me to search the web for current facts. What would you "
+                "like to do?",
+            ],
             'science': {
                 'physics': [
                     "Physics studies the fundamental laws of nature including forces, energy, and matter. "
@@ -238,13 +267,6 @@ class AIBrain:
         # 1. Understand
         analysis = self.analyzer.analyze(user_input, last_topic=self.last_topic)
 
-        # Note spelling assumptions up front
-        spelling_note = ''
-        if analysis.spelling_fixes:
-            fixes = ', '.join(f"'{w}' -> '{fix}'"
-                              for w, fix in list(analysis.spelling_fixes.items())[:3])
-            spelling_note = f"(I assumed you meant: {fixes}) "
-
         # 2. Track the conversation topic for coreference in later turns
         self._update_topic(analysis)
 
@@ -264,7 +286,7 @@ class AIBrain:
         if self.loaded and clause_answers:
             response = self._maybe_blend_neural(response, analysis)
 
-        response = self._post_process(spelling_note + response)
+        response = self._post_process(response)
 
         self.conversation_history.append({
             'role': 'assistant',
@@ -318,6 +340,14 @@ class AIBrain:
         if knowledge and confident:
             return knowledge
 
+        # -- Bare topic mention ("minecraft", "quantum computing") ---------
+        # A short clause that only names something is treated as "tell me
+        # about it", so unknown words still get looked up and learned.
+        if not clause.question_type:
+            answer = self._answer_bare_topic(clause)
+            if answer:
+                return answer
+
         # -- Web search fallback (only for question-like clauses) ----------
         question_like = (clause.is_question or clause.question_type
                          or clause.entities)
@@ -335,35 +365,110 @@ class AIBrain:
             return knowledge
         if clause.question_type:
             return self._honest_unknown(clause)
+
+        # -- A statement that mentions a word we don't know at all: look it
+        #    up online, learn it and answer with what was learned ----------
+        answer = self._respond_to_statement(clause)
+        if answer:
+            return answer
+
         return self._fallback_answer(analysis, clause)
 
     def _match_small_talk(self, clause: Clause) -> str:
-        """Detect greetings, identity, thanks, farewells, capability questions."""
+        """Detect greetings, identity, thanks, farewells, apologies and other
+        conversational cues, so social messages get natural replies."""
         lemmas = set(clause.focus)
         text = clause.text.lower().strip(' ?!.')
-        tokens = set(t.lower() for t in tokenize(clause.text))
+        tokens = {t.lower().strip('.,!?"').replace("'", '')
+                  for t in tokenize(clause.text)}
+        tokens.discard('')
+
+        # Words that don't count as content when deciding whether a clause
+        # is "just" a social cue.
+        fillers = {'you', 'your', 'me', 'i', 'we', 'am', 'are', 'is', 'was',
+                   'were', 'the', 'a', 'an', 'to', 'so', 'very', 'much',
+                   'today', 'there', 'here', 'doing', 'do', 'does', 'did',
+                   'that', 'this', 'it', 'for', 'about', 'now', 'then',
+                   'and', 'but', 'with', 'of', 'at', 'on', 'in', 'my', 'our',
+                   'really', 'just', 'also', 'too', 'be', 'been', 'have',
+                   'has', 'had', 'will', 'would', 'can', 'could', 'all',
+                   'one', 'well', 'up', 'out'}
 
         def only(words) -> bool:
             """True if the clause consists (almost) only of these words."""
-            content = tokens - words - {'you', 'your', 'me', 'i', 'am', 'are', 'is',
-                                        'the', 'a', 'an', 'to', 'so', 'very', 'much',
-                                        'today', 'there', 'doing', 'do', 'doing'}
-            return len(content) == 0
+            return not (tokens - words - fillers)
+
+        def pick(key) -> str:
+            return str(np.random.choice(self.knowledge_base[key]))
 
         greeting_words = {'hi', 'hello', 'hey', 'howdy', 'yo', 'greetings',
                           'morning', 'afternoon', 'evening', 'sup', 'whats', 'up'}
         if only(greeting_words) and (tokens & greeting_words):
-            return str(np.random.choice(self.knowledge_base['greetings']))
+            return pick('greetings')
 
         if re.search(r"how (are|is) (you|it going|things|your day)", text):
-            return str(np.random.choice(self.knowledge_base['howareyou']))
+            return pick('howareyou')
+
+        # "no thanks" is a polite refusal, not gratitude
+        if text in ('no thanks', 'no thank you'):
+            return pick('negation')
 
         if lemmas & {'thank', 'thanks', 'thx', 'thankx'} or text in ('thanks', 'thank you'):
-            return str(np.random.choice(self.knowledge_base['thanks']))
+            return pick('thanks')
 
         if only({'bye', 'goodbye', 'later', 'farewell', 'see', 'soon', 'cya', 'peace'}) \
                 and (tokens & {'bye', 'goodbye', 'later', 'farewell', 'cya'}):
-            return str(np.random.choice(self.knowledge_base['bye']))
+            return pick('bye')
+
+        # -- Conversational cues. Only when the clause carries no other
+        #    intent, so "what does sorry mean" still gets a definition. -----
+        if not clause.question_type:
+            # Apologies: "sorry", "my bad", "i'm so sorry about that"
+            apology_words = {'sorry', 'apologize', 'apology', 'apologies',
+                             'oops', 'bad', 'excuse', 'pardon', 'forgive'}
+            if ((tokens & {'sorry', 'oops'})
+                    or re.search(r"\bmy bad\b|\bexcuse me\b|\bpardon me\b", text)) \
+                    and only(apology_words):
+                return pick('apology')
+
+            # "i don't know" / "not sure" / "no idea"
+            if re.fullmatch(r"(?:i (?:do|did)(?:n'?t| not)? know(?: nothing)?|idk|"
+                            r"dunno|no idea|i have no idea|i'?m not sure|not sure)[.!, ]*", text):
+                return pick('idk')
+
+            # Acknowledgements & affirmations: "ok", "cool", "got it", "yes", "lol"
+            ack_words = {'ok', 'okay', 'k', 'cool', 'nice', 'great', 'awesome',
+                         'wow', 'amazing', 'alright', 'right', 'got', 'good',
+                         'makes', 'sense', 'see', 'fine', 'true', 'yeah',
+                         'yep', 'yes', 'sure', 'definitely', 'absolutely',
+                         'correct', 'exactly', 'lol', 'haha', 'hahaha', 'lmao',
+                         'funny', 'heh', 'hehe', 'hmm', 'interesting', 'fair',
+                         'sounds', 'totally', 'agreed'}
+            if (tokens & ack_words) and only(ack_words):
+                return pick('acknowledgment')
+
+            # Bare negations: "no", "nope", "nah", "not really"
+            if (tokens & {'no', 'nope', 'nah'}) \
+                    and only({'no', 'nope', 'nah', 'never', 'not', 'nothing',
+                              'none', 'really', 'yet', 'thanks', 'thank'}):
+                return pick('negation')
+
+            # Praise: "good job", "well done", "you're smart", "that was funny"
+            praise_patterns = [
+                r"\b(?:good|great|nice|awesome|excellent|amazing) (?:job|work|bot|ai)\b",
+                r"\bwell done\b",
+                r"\bi (?:like|love) (?:you|this|it|talking to you)\b",
+                r"you'?re (?:so |very |really )?(?:smart|clever|awesome|amazing|funny|cool|great|helpful|good)",
+                r"\bthat (?:was|is) (?:funny|hilarious|great|awesome|amazing)\b",
+                r"\bimpressive\b",
+            ]
+            if any(re.search(p, text) for p in praise_patterns):
+                return pick('praise')
+
+            # Bare calls for help
+            if text in ('help', 'help me', 'i need help', 'help please',
+                        'please help', 'help me please', 'can you help me'):
+                return pick('help')
 
         identity_patterns = [
             r'who are you', r'what are you', r'your name', r'about yourself',
@@ -387,7 +492,8 @@ class AIBrain:
     # Dictionary answers
     # ------------------------------------------------------------------
 
-    def _answer_definition(self, clause: Clause, analysis: Analysis) -> str:
+    def _answer_definition(self, clause: Clause,
+                           analysis: Optional[Analysis] = None) -> str:
         """Answer 'what does X mean' style questions from the dictionary."""
         target = (clause.definition_target or '').strip()
         if not target:
@@ -412,7 +518,12 @@ class AIBrain:
                 lines.append(line)
             pos = entry.parts_of_speech[0] if entry.parts_of_speech else 'word'
             word = entry.word[0].upper() + entry.word[1:] if entry.word else entry.word
-            result = f"{word} ({pos}): " + ' '.join(lines)
+            if lines and lines[0].lower().startswith(entry.word.lower()):
+                # The definition already starts with the word itself
+                # (typical for learned summaries) - don't repeat it.
+                result = ' '.join(lines)
+            else:
+                result = f"{word} ({pos}): " + ' '.join(lines)
             if entry.freshly_learned:
                 result += (f" (That was new to me, so I looked it up online and added it "
                            f"to my dictionary - knowledge is now at "
@@ -452,27 +563,42 @@ class AIBrain:
         add it to the learned dictionary, so it is known offline from now on.
         Returns a response for the user, or '' when nothing was found.
         """
+        learned = self._try_learn_from_web(target)
+        if learned is None:
+            return ''
+        summary, url = learned
+        # Don't say "Minecraft: Minecraft is ..." when the summary already
+        # starts with the term.
+        if summary.lower().startswith(target.lower()):
+            body = summary
+        else:
+            display = target[0].upper() + target[1:] if target else target
+            body = f"{display}: {summary}"
+        source_url = f" Source: {url}." if url else ''
+        return (f"{body}{source_url} That was new to me, so I looked it up and "
+                f"added it to my dictionary - knowledge is now at "
+                f"{format_version(self.dictionary.knowledge_version)}.")
+
+    def _try_learn_from_web(self, target: str) -> Optional[Tuple[str, str]]:
+        """Search for `target` and learn it when the result is really about it.
+        Returns (summary, url), or None when nothing usable was found."""
         result = self.search.quick_answer(target)
         if result is None:
-            return ''
+            return None
         if not self._title_matches(target, result.title):
             # The best result is about something else - the target is
             # probably a misspelling, not a real unknown term.
-            return ''
+            return None
         summary = ' '.join(result.display.split())
         if len(summary) < 20:
-            return ''
+            return None
         if not self.dictionary.learn_from_summary(target, summary,
                                                   source=result.source,
                                                   url=result.url):
-            return ''
+            return None
         if not summary.endswith(('.', '!', '?')):
             summary += '.'
-        display = target[0].upper() + target[1:] if target else target
-        source_url = f" Source: {result.url}." if result.url else ''
-        return (f"{display}: {summary}{source_url} That was new to me, so I looked "
-                f"it up and added it to my dictionary - knowledge is now at "
-                f"{format_version(self.dictionary.knowledge_version)}.")
+        return summary, result.url
 
     @staticmethod
     def _title_matches(target: str, title: str) -> bool:
@@ -497,6 +623,86 @@ class AIBrain:
             if needle in text.lower():
                 return text
         return ''
+
+    # Tokens that make a clause a personal statement ("i like pizza") rather
+    # than a bare topic mention ("pizza").
+    _STATEMENT_MARKERS = frozenset(
+        'i you we they he she it me him her us them my your our their his its '
+        'mine yours im ive ill id youre youve youll hes shes theyre were was '
+        'am is are be been being like likes love loves hate hates think thinks '
+        'know knows want wants need needs feel feels say says said tell told '
+        'ask asked get got gets make makes made have has had do does did done '
+        'can could would should will wont just really too also not no never '
+        'because when while since about'.split())
+
+    # Words never treated as unknown terms to learn online: chat slang and
+    # apostrophe-less contractions.
+    _NO_LEARN_WORDS = frozenset(
+        'dont doesnt didnt wont wouldnt cant couldnt shouldnt isnt arent wasnt '
+        'werent hasnt havent hadnt aint im ive ill id youre youve youll theyre '
+        'thats whats lets pls plz tho thru u ur r bc cuz imo tbh idk smh ngl '
+        'fyi brb lol lmao rofl omg wtf btw haha hahaha heh hehe hmm'.split())
+
+    def _answer_bare_topic(self, clause: Clause) -> str:
+        """
+        A short clause that only names something ("minecraft", "quantum
+        computing", "pizza") is answered as if the user had said "tell me
+        about it": dictionary definition, local knowledge, or a web lookup
+        the AI learns from.
+        """
+        tokens = [t.lower().strip('.,!?"').replace("'", '')
+                  for t in tokenize(clause.text)]
+        tokens = [t for t in tokens if t]
+        if not tokens or len(tokens) > 4:
+            return ''
+        if any(t in self._STATEMENT_MARKERS for t in tokens):
+            return ''
+        if not clause.focus:
+            return ''
+        clause.definition_target = ' '.join(clause.focus[:3])
+        return self._answer_definition(clause)
+
+    def _respond_to_statement(self, clause: Clause) -> str:
+        """
+        Respond to a statement that mentions something special:
+        - a term the AI has already learned -> connect back to that knowledge
+        - a word the AI doesn't know at all ("i have been playing minecraft")
+          -> look it up online, learn it and answer with what was learned,
+          so the word is understood from now on.
+        """
+        # A learned term is mentioned: use that knowledge in the reply
+        text_words = {t.lower() for t in tokenize(clause.text)}
+        for term in self.dictionary.learned_words:
+            term_words = set(term.lower().split())
+            if term_words and term_words <= text_words:
+                entry = self.dictionary.lookup(term, use_online=False)
+                if entry.found and entry.definitions:
+                    first = split_sentences(entry.definitions[0].text)
+                    first = first[0] if first else ''
+                    if first and not first.endswith(('.', '!', '?')):
+                        first += '.'
+                    display = term[0].upper() + term[1:]
+                    return (f"{display} - I remember that one! {first} "
+                            f"Anything you'd like to know about it?")
+
+        # A word the AI doesn't know at all: learn it online
+        if not self.search.enabled:
+            return ''
+        unknown = [w for w in clause.focus
+                   if len(w) > 2 and w not in self._NO_LEARN_WORDS
+                   and not self.dictionary.is_word(w)]
+        if not unknown:
+            return ''
+        word = unknown[0]
+        learned = self._try_learn_from_web(word)
+        if learned is None:
+            return ''
+        summary, url = learned
+        source = f" Source: {url}." if url else ''
+        return (f"'{word}' was new to me, so I looked it up and added it to "
+                f"my dictionary - knowledge is now at "
+                f"{format_version(self.dictionary.knowledge_version)}. "
+                f"{summary}{source}")
 
     def _answer_spell(self, clause: Clause) -> str:
         """Answer 'how do you spell X' questions."""
@@ -786,6 +992,12 @@ class AIBrain:
         if clause is not None and clause.negated:
             return ("Understood - I've noted that. Would you like to talk about "
                     "something else, or ask me to define or search for something?")
+        if not self.loaded:
+            # Without the neural model there is nothing more to add beyond
+            # the other sources, so stay conversational instead of pretending.
+            return ("I'm not sure how to respond to that. You could rephrase "
+                    "it, ask me directly - for example \"what is X?\" or "
+                    "\"search for X\" - or give me a word to look up.")
         return str(np.random.choice(self.knowledge_base['fallback']))
 
     def _maybe_blend_neural(self, response: str, analysis: Analysis) -> str:

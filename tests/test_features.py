@@ -549,6 +549,95 @@ def brain_does_not_learn_typos():
 
 
 # ----------------------------------------------------------------------
+# Natural conversation: social cues + learning from any mention
+# ----------------------------------------------------------------------
+
+@test
+def brain_social_cues():
+    brain = get_brain()
+    cases = [
+        ('sorry', 'apology'), ('my bad', 'apology'),
+        ('ok', 'acknowledgment'), ('cool', 'acknowledgment'),
+        ('lol', 'acknowledgment'),
+        ('no', 'negation'), ('no thanks', 'negation'),
+        ('good job', 'praise'),
+        ('help', 'help'),
+        ("i don't know", 'idk'),
+    ]
+    for text, pool in cases:
+        response = brain.think(text)
+        assert response in brain.knowledge_base[pool], \
+            f'{text!r} should get a {pool} reply, got: {response}'
+        assert 'interesting topic' not in response.lower()
+    # Greetings keep working
+    greeting = brain.think('hi')
+    assert greeting in brain.knowledge_base['greetings']
+
+
+@test
+def brain_social_cue_does_not_hijack_intents():
+    brain = get_brain()
+    response = brain.think('what does sorry mean?')
+    assert response not in brain.knowledge_base['apology'], response
+    assert 'regret' in response.lower() or 'sorrow' in response.lower(), response
+
+
+@test
+def brain_bare_word_gets_definition():
+    brain = get_brain()
+    response = brain.think('pizza')
+    assert 'pizza' in response.lower(), response
+    assert 'interesting topic' not in response.lower(), response
+
+
+@test
+def brain_bare_unknown_word_learned_from_web():
+    from src.search import SearchResult
+    with tempfile.TemporaryDirectory() as tmp:
+        brain = AIBrain(search_enabled=True, dictionary_online=False,
+                        learn_file=os.path.join(tmp, 'learned_dictionary.json'))
+        brain.loaded = False
+        brain.search.quick_answer = lambda query: SearchResult(
+            title='Minecraft', snippet='',
+            url='https://en.wikipedia.org/wiki/Minecraft', source='wikipedia',
+            extract='Minecraft is a sandbox video game developed and published '
+                    'by Mojang Studios.')
+        response = brain.think('minecraft')
+        assert 'sandbox' in response.lower(), response
+        assert 'added it to my dictionary' in response.lower(), response
+        assert 'minecraft' in brain.dictionary.learned_words
+        # Clean, natural formatting - no leaked internals, no doubled words
+        assert 'assumed' not in response.lower(), response
+        assert 'minecraft: minecraft' not in response.lower(), response
+        assert response.startswith('Minecraft is'), response
+
+
+@test
+def brain_statement_mentions_are_understood():
+    from src.search import SearchResult
+    with tempfile.TemporaryDirectory() as tmp:
+        brain = AIBrain(search_enabled=True, dictionary_online=False,
+                        learn_file=os.path.join(tmp, 'learned_dictionary.json'))
+        brain.loaded = False
+        brain.search.quick_answer = lambda query: SearchResult(
+            title='Minecraft', snippet='',
+            url='https://en.wikipedia.org/wiki/Minecraft', source='wikipedia',
+            extract='Minecraft is a sandbox video game developed and published '
+                    'by Mojang Studios.')
+        # A statement with an unknown word teaches the AI something new
+        first = brain.think('i have been playing minecraft all week')
+        assert "'minecraft' was new to me" in first.lower(), first
+        assert 'sandbox' in first.lower(), first
+        version = brain.dictionary.knowledge_version
+        # Later mentions are answered from that knowledge, without re-learning
+        second = brain.think('minecraft is my favorite game')
+        assert 'remember that one' in second.lower(), second
+        assert 'sandbox' in second.lower(), second
+        assert brain.dictionary.knowledge_version == version, \
+            'an already-learned word must not be learned again'
+
+
+# ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------
 
