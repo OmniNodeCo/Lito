@@ -80,15 +80,15 @@ class AIBrain:
         """Build a structured knowledge base for retrieval."""
         kb = {
             'greetings': [
-                "Hello! I'm SmartAI, an artificial intelligence built from scratch. How can I help you?",
+                "Hello! I'm Lito, an artificial intelligence built from scratch. How can I help you?",
                 "Hi there! I'm ready to help you with questions, conversation, or just chatting.",
                 "Hey! Nice to meet you. I'm an AI assistant. What would you like to talk about?",
             ],
             'identity': [
-                f"I'm SmartAI {format_version(__version__)}, a neural network-based AI built "
+                f"I'm Lito {format_version(__version__)}, a neural network-based AI built "
                 "entirely from scratch in Python. I use a transformer architecture with "
                 "self-attention, trained on a knowledge corpus.",
-                f"I'm SmartAI {format_version(__version__)}, an artificial intelligence created "
+                f"I'm Lito {format_version(__version__)}, an artificial intelligence created "
                 "without using any pre-trained models. My neural network was designed and "
                 "trained from the ground up.",
             ],
@@ -134,6 +134,13 @@ class AIBrain:
             'praise': [
                 "Thank you, that's very kind! I'm doing my best. What else can I help you with?",
                 "Thanks! I'm glad I could help. Anything else you'd like to know?",
+            ],
+            'criticism': [
+                "Fair enough - I'm a small AI built entirely from scratch, so I still get "
+                "things wrong. Tell me what I missed and I'll do better.",
+                "You're right to push back - I do make mistakes. Tell me what I got wrong, "
+                "or ask me to search the web for a reliable answer.",
+                "Ouch, fair. I'm learning as I go - what exactly did I get wrong?",
             ],
             'idk': [
                 "That's okay! Feel free to ask me anything - I can explain "
@@ -485,13 +492,29 @@ class AIBrain:
             if any(re.search(p, text) for p in praise_patterns):
                 return pick('praise')
 
+            # Criticism: "you are bad at this", "you suck", "you're wrong"
+            criticism_patterns = [
+                r"you(?:'re| are| r) (?:so |very |really |pretty |just )?"
+                r"(?:bad|terrible|awful|horrible|stupid|dumb|useless|trash|garbage|weak)",
+                r"\b(?:bad|worst|terrible|useless|stupid) (?:bot|ai)\b",
+                r"you suck",
+                r"you(?:'re| are) wrong\b",
+                r"you (?:don'?t|do not) know (?:anything|anything at all|nothing|what)",
+            ]
+            if any(re.search(p, text) for p in criticism_patterns):
+                return pick('criticism')
+
             # Bare calls for help
             if text in ('help', 'help me', 'i need help', 'help please',
                         'please help', 'help me please', 'can you help me'):
                 return pick('help')
 
+        # "what are your params" / "how many parameters do you have"
+        if re.search(r"how many (?:params|parameters)|\byour (?:params|parameters)\b", text):
+            return self._answer_params()
+
         identity_patterns = [
-            r'who are you', r'what are you', r'your name', r'about yourself',
+            r'who are you', r'what are you\b', r'your name', r'about yourself',
             r'introduce yourself', r'tell me about you\b', r'who made you',
             r'who created you', r'who built you',
         ]
@@ -507,6 +530,18 @@ class AIBrain:
             return str(np.random.choice(self.knowledge_base['capabilities']))
 
         return ''
+
+    def _answer_params(self) -> str:
+        """Answer questions about the AI's own parameters."""
+        if self.loaded and self.model is not None:
+            count = getattr(self.model, '_param_count', 0)
+            return (f"My neural network is a transformer with {count:,} "
+                    f"parameters, built and trained entirely from scratch - no "
+                    f"pretrained weights. The rest of what I know comes from my "
+                    f"dictionary, knowledge base and web search.")
+        return ("I don't have the neural model loaded right now, so I can't "
+                "count my parameters - run 'python train.py' to train it. It's "
+                "a small transformer built entirely from scratch.")
 
     # ------------------------------------------------------------------
     # Dictionary answers

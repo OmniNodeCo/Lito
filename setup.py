@@ -1,10 +1,10 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='smartai',
-    version='1.2.1',
+    name='lito',
+    version='1.0.3',
     description='An AI built entirely from scratch - no pretrained models',
-    author='SmartAI',
+    author='Lito',
     packages=find_packages(),
     python_requires='>=3.8',
     install_requires=[
@@ -12,8 +12,8 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'smartai=main:main',
-            'smartai-train=train:main',
+            'lito=main:main',
+            'lito-train=train:main',
         ],
     },
 )

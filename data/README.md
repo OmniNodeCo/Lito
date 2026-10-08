@@ -1,4 +1,4 @@
-# SmartAI Data Files
+# Lito Data Files
 
 This directory contains the offline English dictionary data used by
 `src/dictionary.py` and the NLP pipeline in `src/nlp.py`.

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Feature tests for SmartAI: dictionary, NLP pipeline, web search parsing,
+Feature tests for Lito: dictionary, NLP pipeline, web search parsing,
 and complex-sentence understanding.
 
 Runs with plain Python (no test dependencies):
@@ -409,7 +409,7 @@ def brain_spelling_note():
 @test
 def brain_small_talk():
     brain = get_brain()
-    assert 'smartai' in brain.think('who are you?').lower()
+    assert 'lito' in brain.think('who are you?').lower()
     capabilities = brain.think('What can you do?').lower()
     assert any(k in capabilities for k in ('answer', 'dictionary', 'search')), capabilities
 
@@ -664,6 +664,25 @@ def brain_fallback_turn_still_blends_neural_text():
     response = brain.think('i really enjoy painting')
     assert 'relaxing' in response.lower(), response
     assert 'painting' in response.lower(), response
+
+
+@test
+def brain_handles_criticism():
+    brain = get_brain()
+    response = brain.think('you are bad at this')
+    assert response in brain.knowledge_base['criticism'], response
+    blunt = brain.think("you don't know anything")
+    assert blunt in brain.knowledge_base['criticism'], blunt
+
+
+@test
+def brain_params_question():
+    brain = get_brain()
+    response = brain.think('what are your params')
+    assert 'parameter' in response.lower(), response
+    assert response not in brain.knowledge_base['identity'], response
+    howmany = brain.think('how many parameters do you have?')
+    assert 'parameter' in howmany.lower(), howmany
 
 
 # ----------------------------------------------------------------------

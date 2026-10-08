@@ -28,7 +28,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-USER_AGENT = 'SmartAI/1.0 (github.com/OmniNodeCo/Lito; educational project)'
+USER_AGENT = 'Lito/1.0 (github.com/OmniNodeCo/Lito; educational project)'
 WIKIPEDIA_API = 'https://en.wikipedia.org/w/api.php'
 WIKIPEDIA_SUMMARY_API = 'https://en.wikipedia.org/api/rest_v1/page/summary/{}'
 DUCKDUCKGO_API = 'https://api.duckduckgo.com/'

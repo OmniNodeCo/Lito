@@ -298,7 +298,7 @@ class EnglishDictionary:
         else:
             url = self.FREE_DICT_API.format(urllib.parse.quote(word))
             try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'SmartAI/1.0'})
+                req = urllib.request.Request(url, headers={'User-Agent': 'Lito/1.0'})
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode('utf-8'))
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,

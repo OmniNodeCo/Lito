@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Train the SmartAI model from scratch.
+Train the Lito model from scratch.
 
 Usage:
     python train.py [--epochs N] [--lr RATE] [--d_model DIM] [--n_layers N]
@@ -23,7 +23,7 @@ from src.dataset import TrainingData
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train SmartAI from scratch')
+    parser = argparse.ArgumentParser(description='Train Lito from scratch')
     parser.add_argument('--epochs', type=int, default=30, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
     parser.add_argument('--d_model', type=int, default=128, help='Model dimension')
@@ -45,7 +45,7 @@ def main():
     args = parse_args()
 
     print("=" * 60)
-    print("  SmartAI Training Pipeline")
+    print("  Lito Training Pipeline")
     print("  Built from Scratch - No Pretrained Models")
     print("=" * 60)
 

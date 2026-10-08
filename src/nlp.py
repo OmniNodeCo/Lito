@@ -1,7 +1,7 @@
 """
 Natural language processing built entirely from scratch - no NLP libraries.
 
-This module gives SmartAI real sentence understanding instead of naive
+This module gives Lito real sentence understanding instead of naive
 keyword matching:
 
 - Sentence segmentation (abbreviation aware)

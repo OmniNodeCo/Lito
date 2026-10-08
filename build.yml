@@ -1,8 +1,8 @@
-# SmartAI Build Configuration
+# Lito Build Configuration
 # ===========================
 
 # Application name
-name: SmartAI
+name: Lito
 
 # Main entry point
 entry_point: main.py

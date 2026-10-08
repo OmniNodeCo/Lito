@@ -25,7 +25,7 @@ def _format_size(bytes_num: int) -> str:
 def download_file_with_progress(url: str, dest_path: str, headers: dict = None) -> bool:
     """Download a file with an interactive progress bar."""
     ctx = ssl.create_default_context()
-    req = urllib.request.Request(url, headers=headers or {'User-Agent': 'SmartAI-Downloader'})
+    req = urllib.request.Request(url, headers=headers or {'User-Agent': 'Lito-Downloader'})
 
     try:
         with urllib.request.urlopen(req, context=ctx) as response, open(dest_path, 'wb') as out_file:
@@ -99,7 +99,7 @@ def download_model_from_release(repo: str = '', tag: str = 'latest',
         print("Invalid repository format. Must be 'owner/repo'.")
         return False
 
-    headers = {'User-Agent': 'SmartAI-Downloader'}
+    headers = {'User-Agent': 'Lito-Downloader'}
     if token or os.environ.get('GITHUB_TOKEN'):
         tok = token or os.environ.get('GITHUB_TOKEN')
         headers['Authorization'] = f'Bearer {tok}'

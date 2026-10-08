@@ -1,7 +1,7 @@
 @echo off
-TITLE SmartAI - AI From Scratch
+TITLE Lito - AI From Scratch
 echo ============================================
-echo   SmartAI - Artificial Intelligence
+echo   Lito - Artificial Intelligence
 echo   Built From Scratch - No Pretrained Models
 echo ============================================
 echo.

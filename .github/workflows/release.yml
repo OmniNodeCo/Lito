@@ -1,6 +1,6 @@
-name: Release SmartAI
+name: Release Lito
 
-# Publishes the artifacts of the latest green "Build SmartAI" run as a
+# Publishes the artifacts of the latest green "Build Lito" run as a
 # versioned GitHub Release. Nothing is rebuilt here:
 #
 #   1. Find the most recent successful run of build.yml on the chosen branch.
@@ -11,7 +11,7 @@ name: Release SmartAI
 #      the commit that was built (e.g. v1.1.0).
 #
 # Triggers:
-#   - Manually: Actions -> Release SmartAI -> Run workflow
+#   - Manually: Actions -> Release Lito -> Run workflow
 #   - Pushing a v* tag: publishes under that tag
 #
 # Build artifacts are only kept for 30-90 days; if the latest green run is
@@ -41,7 +41,7 @@ permissions:
   actions: read     # list workflow runs and download their artifacts
 
 concurrency:
-  group: release-smartai
+  group: release-lito
   cancel-in-progress: false
 
 jobs:
@@ -49,7 +49,7 @@ jobs:
     name: Publish latest green build
     runs-on: ubuntu-latest
     steps:
-      - name: Find the latest green Build SmartAI run
+      - name: Find the latest green Build Lito run
         id: find-run
         env:
           GH_TOKEN: ${{ github.token }}
@@ -57,13 +57,13 @@ jobs:
           BRANCH: ${{ inputs.branch || github.event.repository.default_branch || 'main' }}
         shell: bash
         run: |
-          echo "Looking for the latest green 'Build SmartAI' run on branch '$BRANCH'..."
+          echo "Looking for the latest green 'Build Lito' run on branch '$BRANCH'..."
           GREEN="$(gh run list --repo "$REPO" --workflow build.yml --branch "$BRANCH" --limit 50 \
             --json databaseId,headSha,number,createdAt,url,conclusion,status \
             | jq '[.[] | select(.status == "completed" and .conclusion == "success")]')"
 
           if [ "$(jq length <<<"$GREEN")" -eq 0 ]; then
-            echo "::error::No successful 'Build SmartAI' run found on branch '$BRANCH'. Trigger that workflow first, then run this one."
+            echo "::error::No successful 'Build Lito' run found on branch '$BRANCH'. Trigger that workflow first, then run this one."
             exit 1
           fi
 
@@ -135,7 +135,7 @@ jobs:
           LISTED="$(jq -r '.[].name' <<<"$ARTIFACTS")"
 
           MISSING=""
-          for EXPECTED in trained-model SmartAI-Windows SmartAI-Linux SmartAI-macOS; do
+          for EXPECTED in trained-model Lito-Windows Lito-Linux Lito-macOS; do
             if ! grep -qx "$EXPECTED" <<<"$LISTED"; then
               MISSING="$MISSING $EXPECTED"
             fi
@@ -149,7 +149,7 @@ jobs:
             if [ -n "$MISSING" ]; then
               echo "  Missing:$MISSING"
             fi
-            echo "  Re-run the 'Build SmartAI' workflow on that branch, then run this release workflow again."
+            echo "  Re-run the 'Build Lito' workflow on that branch, then run this release workflow again."
             exit 1
           fi
 
@@ -164,7 +164,7 @@ jobs:
       - name: Download Windows executable artifact
         uses: actions/download-artifact@v4
         with:
-          name: SmartAI-Windows
+          name: Lito-Windows
           run-id: ${{ steps.find-run.outputs.run-id }}
           github-token: ${{ github.token }}
           path: downloaded/windows
@@ -172,7 +172,7 @@ jobs:
       - name: Download Linux executable artifact
         uses: actions/download-artifact@v4
         with:
-          name: SmartAI-Linux
+          name: Lito-Linux
           run-id: ${{ steps.find-run.outputs.run-id }}
           github-token: ${{ github.token }}
           path: downloaded/linux
@@ -180,7 +180,7 @@ jobs:
       - name: Download macOS executable artifact
         uses: actions/download-artifact@v4
         with:
-          name: SmartAI-macOS
+          name: Lito-macOS
           run-id: ${{ steps.find-run.outputs.run-id }}
           github-token: ${{ github.token }}
           path: downloaded/macos
@@ -194,15 +194,15 @@ jobs:
           unzip -o downloaded/model/model.zip -d release/
 
           # One executable per artifact; rename so every release asset has a unique name
-          cp downloaded/windows/SmartAI.exe release/SmartAI-Windows.exe
-          cp downloaded/linux/SmartAI release/SmartAI-Linux
-          cp downloaded/macos/SmartAI release/SmartAI-macOS
+          cp downloaded/windows/Lito.exe release/Lito-Windows.exe
+          cp downloaded/linux/Lito release/Lito-Linux
+          cp downloaded/macos/Lito release/Lito-macOS
 
           # The zip as-is, so `main.py --download` (which looks for model.zip) keeps working
           cp downloaded/model/model.zip release/model.zip
 
           # Every expected file must exist and not be empty
-          for FILE in best_model.npz tokenizer.json model.zip SmartAI-Windows.exe SmartAI-Linux SmartAI-macOS; do
+          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe Lito-Linux Lito-macOS; do
             if [ ! -s "release/$FILE" ]; then
               echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
               exit 1
@@ -214,7 +214,7 @@ jobs:
           python3 -m json.tool release/tokenizer.json >/dev/null
 
           # Checksums so downloads can be verified
-          (cd release && sha256sum best_model.npz tokenizer.json model.zip SmartAI-Windows.exe SmartAI-Linux SmartAI-macOS > SHA256SUMS.txt)
+          (cd release && sha256sum best_model.npz tokenizer.json model.zip Lito-Windows.exe Lito-Linux Lito-macOS > SHA256SUMS.txt)
 
           echo "Release contents:"
           ls -la release/
@@ -231,7 +231,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "Artifacts from the latest green **Build SmartAI** run."
+            echo "Artifacts from the latest green **Build Lito** run."
             echo
             echo "- **Built from:** \`$SHORT_SHA\` — $COMMIT_SUBJECT"
             echo "- **Build run:** [#$RUN_NUMBER]($RUN_URL)"
@@ -245,9 +245,9 @@ jobs:
             echo "| \`best_model.npz\` | Trained model weights (best checkpoint) |"
             echo "| \`tokenizer.json\` | Tokenizer / vocabulary for the model |"
             echo "| \`model.zip\` | The two files above bundled (what \`main.py --download\` fetches) |"
-            echo "| \`SmartAI-Windows.exe\` | Standalone Windows executable |"
-            echo "| \`SmartAI-Linux\` | Standalone Linux executable |"
-            echo "| \`SmartAI-macOS\` | Standalone macOS executable |"
+            echo "| \`Lito-Windows.exe\` | Standalone Windows executable |"
+            echo "| \`Lito-Linux\` | Standalone Linux executable |"
+            echo "| \`Lito-macOS\` | Standalone macOS executable |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
             echo
             echo "The executables bundle everything they need. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
@@ -258,15 +258,15 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ steps.find-run.outputs.head-sha }}
-          name: SmartAI ${{ steps.version.outputs.tag }}
+          name: Lito ${{ steps.version.outputs.tag }}
           body_path: notes.md
           files: |
             release/best_model.npz
             release/tokenizer.json
             release/model.zip
-            release/SmartAI-Windows.exe
-            release/SmartAI-Linux
-            release/SmartAI-macOS
+            release/Lito-Windows.exe
+            release/Lito-Linux
+            release/Lito-macOS
             release/SHA256SUMS.txt
           fail_on_unmatched_files: true
           draft: false

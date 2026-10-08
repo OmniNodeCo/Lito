@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SmartAI - An AI built entirely from scratch.
+Lito - An AI built entirely from scratch.
 
 Usage:
     python main.py                     # Start interactive chat (auto-detects model)
@@ -78,7 +78,7 @@ def trigger_training(save_dir: str) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='SmartAI - AI from Scratch')
+    parser = argparse.ArgumentParser(description='Lito - AI from Scratch')
     parser.add_argument('--train', action='store_true', help='Train the model locally before chatting')
     parser.add_argument('--download', action='store_true', help='Force download latest model from GitHub')
     parser.add_argument('--model-url', type=str, default='', help='Direct URL to model.zip')

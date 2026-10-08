@@ -1,4 +1,4 @@
-name: Build SmartAI
+name: Build Lito
 
 on:
   push:
@@ -64,7 +64,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: latest-model
-          name: "SmartAI Latest Model"
+          name: "Lito Latest Model"
           body: "Automated build of the latest trained weights and tokenizer."
           files: model.zip
           draft: false
@@ -79,14 +79,14 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           - os: windows-latest
-            artifact_name: SmartAI-Windows
-            binary_name: SmartAI.exe
+            artifact_name: Lito-Windows
+            binary_name: Lito.exe
           - os: ubuntu-latest
-            artifact_name: SmartAI-Linux
-            binary_name: SmartAI
+            artifact_name: Lito-Linux
+            binary_name: Lito
           - os: macos-latest
-            artifact_name: SmartAI-macOS
-            binary_name: SmartAI
+            artifact_name: Lito-macOS
+            binary_name: Lito
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code

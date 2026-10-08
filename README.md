@@ -1,10 +1,10 @@
-# SmartAI (Lito)
+# Lito
 
 An AI built **entirely from scratch** — no pretrained models, no ML frameworks, no
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.1** — see [Versions](#versions).
+**Current version: v1.0.3** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -31,7 +31,7 @@ English dictionary, and live web search.
   needed, with caching and graceful offline behavior
 - **Learn new words and terms** — whenever it meets a word or term it
   doesn't know, in a question ("what is minecraft?"), a bare mention
-  ("minecraft") or a statement ("i have been playing minecraft"), SmartAI
+  ("minecraft") or a statement ("i have been playing minecraft"), Lito
   searches the web, adds it to its own learned dictionary and remembers it
   offline forever after (each learned entry bumps the AI's knowledge version)
 
@@ -184,7 +184,7 @@ dictionary, or the local knowledge base, it:
 1. Searches the web for the word or term (a title-match guard rejects
    results for probable misspellings, so typos fall back to "did you mean?")
 2. Saves the summary to `data/learned_dictionary.json`
-3. Bumps the knowledge version (e.g. v1.2.1 → v1.2.2) and tells the user
+3. Bumps the knowledge version (e.g. v1.0.3 → v1.0.4) and tells the user
 
 Learned entries are used for every future lookup — offline, instantly, across
 restarts. Mentioning a learned term again later ("minecraft is my favorite
@@ -194,12 +194,12 @@ the AI knows with `/learned`.
 
 ### Versions (`src/version.py`)
 
-SmartAI carries two version numbers:
+Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.1**). Shown
+- **Application version** — the software itself (currently **v1.0.3**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.1 → v1.2.2 → ...).
+  patch number with every word or term the AI learns (v1.0.3 → v1.0.4 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -227,7 +227,7 @@ weights and the from-scratch BPE tokenizer to `checkpoints/`.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 47 tests, no network required
+python tests/test_features.py     # 49 tests, no network required
 ```
 
 ## Releases
@@ -242,8 +242,8 @@ Two GitHub Actions workflows handle packaging and publishing:
   release from the latest green build run. It finds the most recent
   successful build, downloads its model, tokenizer and executables, and
   attaches them to a release tagged with the app version of the commit that
-  was built (e.g. `v1.1.0`). Trigger it from the Actions tab
-  ("Release SmartAI" -> "Run workflow"), or push a `v*` tag.
+  was built (e.g. `v1.0.3`). Trigger it from the Actions tab
+  ("Release Lito" -> "Run workflow"), or push a `v*` tag.
 
 `python main.py --download` fetches the model from the latest release, so a
 published release works with the existing downloader right away.

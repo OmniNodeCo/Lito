@@ -12,11 +12,11 @@ class ChatInterface:
     """Terminal-based chat interface for the AI."""
 
     BANNER = rf"""
-  ____                       _      _    ___
- / ___| _ __ ___   __ _ _ __| |_   / \  |_ _|
- \___ \| '_ ` _ \| _` | '__| __| / _ \  | |
-  ___) | | | | | | (_| | |  | |_ / ___ \ | |
- |____/|_| |_| |_|\__,_|_|   \__/_/   \_\___|
+ _       ___    _____     ___
+| |     |_ _|  |_   _|   / _ \
+| |      | |     | |    | | | |
+| |___   | |     | |    | |_| |
+|_____|  |___|   |_|     \___/
 
     {APP_NAME} {format_version(__version__)}
     AI Built From Scratch - No Pretrained Models

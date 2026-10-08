@@ -13,7 +13,7 @@ import shutil
 def load_build_config():
     """Load build configuration from build.yml (simple parser, no pyyaml needed)."""
     config = {
-        'name': 'SmartAI',
+        'name': 'Lito',
         'entry_point': 'main.py',
         'icon': None,
         'onefile': True,
@@ -46,7 +46,7 @@ def load_build_config():
 def build():
     """Build the executable."""
     print("=" * 50)
-    print("  SmartAI Build System")
+    print("  Lito Build System")
     print("=" * 50)
 
     # Check PyInstaller

@@ -1,8 +1,8 @@
 #!/bin/bash
-# SmartAI Runner for Linux/Mac
+# Lito Runner for Linux/Mac
 
 echo "============================================"
-echo "  SmartAI - Artificial Intelligence"
+echo "  Lito - Artificial Intelligence"
 echo "  Built From Scratch - No Pretrained Models"
 echo "============================================"
 echo ""
@@ -40,5 +40,5 @@ echo ""
 python3 train.py --epochs 30 --batch_size 4 --seq_len 64
 
 echo ""
-echo "Starting SmartAI Chat..."
+echo "Starting Lito Chat..."
 python3 main.py --dir checkpoints
