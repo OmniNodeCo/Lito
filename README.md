@@ -223,6 +223,24 @@ weights and the from-scratch BPE tokenizer to `checkpoints/`.
 python tests/test_features.py     # 40 tests, no network required
 ```
 
+## Releases
+
+Two GitHub Actions workflows handle packaging and publishing:
+
+- **Build** (`.github/workflows/build.yml`) — on every push to main it runs
+  the tests, trains a fresh model, packages `best_model.npz` +
+  `tokenizer.json`, builds standalone Windows/Linux/macOS executables, and
+  keeps the `latest-model` release up to date.
+- **Release** (`.github/workflows/release.yml`) — publishes a versioned
+  release from the latest green build run. It finds the most recent
+  successful build, downloads its model, tokenizer and executables, and
+  attaches them to a release tagged with the app version of the commit that
+  was built (e.g. `v1.1.0`). Trigger it from the Actions tab
+  ("Release SmartAI" -> "Run workflow"), or push a `v*` tag.
+
+`python main.py --download` fetches the model from the latest release, so a
+published release works with the existing downloader right away.
+
 ## Project layout
 
 ```
@@ -233,6 +251,7 @@ data/                 offline dictionary data (see data/README.md)
 tools/                dictionary build scripts
 tests/                feature tests
 build.py, build.yml   PyInstaller packaging config
+.github/workflows/    CI: build.yml (train + package), release.yml (publish)
 ```
 
 ## License notes

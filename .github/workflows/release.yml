@@ -1,0 +1,276 @@
+name: Release SmartAI
+
+# Publishes the artifacts of the latest green "Build SmartAI" run as a
+# versioned GitHub Release. Nothing is rebuilt here:
+#
+#   1. Find the most recent successful run of build.yml on the chosen branch.
+#   2. Download that run's artifacts: best_model.npz + tokenizer.json
+#      (from the 'trained-model' artifact) and the Windows/Linux/macOS
+#      executables.
+#   3. Publish everything as a GitHub Release, tagged with the app version of
+#      the commit that was built (e.g. v1.1.0).
+#
+# Triggers:
+#   - Manually: Actions -> Release SmartAI -> Run workflow
+#   - Pushing a v* tag: publishes under that tag
+#
+# Build artifacts are only kept for 30-90 days; if the latest green run is
+# older than that, this workflow fails and asks you to re-run the build first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch whose latest green build to publish (empty = default branch)'
+        required: false
+        default: ''
+      tag:
+        description: 'Release tag (empty = app version of the built commit, e.g. v1.1.0)'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Publish as a pre-release'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write   # create the release and its tag
+  actions: read     # list workflow runs and download their artifacts
+
+concurrency:
+  group: release-smartai
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish latest green build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find the latest green Build SmartAI run
+        id: find-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ inputs.branch || github.event.repository.default_branch || 'main' }}
+        shell: bash
+        run: |
+          echo "Looking for the latest green 'Build SmartAI' run on branch '$BRANCH'..."
+          GREEN="$(gh run list --repo "$REPO" --workflow build.yml --branch "$BRANCH" --limit 50 \
+            --json databaseId,headSha,number,createdAt,url,conclusion,status \
+            | jq '[.[] | select(.status == "completed" and .conclusion == "success")]')"
+
+          if [ "$(jq length <<<"$GREEN")" -eq 0 ]; then
+            echo "::error::No successful 'Build SmartAI' run found on branch '$BRANCH'. Trigger that workflow first, then run this one."
+            exit 1
+          fi
+
+          RUN_ID="$(jq '.[0].databaseId' <<<"$GREEN")"
+          HEAD_SHA="$(jq -r '.[0].headSha' <<<"$GREEN")"
+          RUN_NUMBER="$(jq '.[0].number' <<<"$GREEN")"
+          CREATED_AT="$(jq -r '.[0].createdAt' <<<"$GREEN")"
+          RUN_URL="$(jq -r '.[0].url' <<<"$GREEN")"
+          COMMIT_SUBJECT="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' | head -n1)"
+
+          echo "Found green run #$RUN_NUMBER (commit $HEAD_SHA): $COMMIT_SUBJECT"
+          {
+            echo "run-id=$RUN_ID"
+            echo "head-sha=$HEAD_SHA"
+            echo "short-sha=${HEAD_SHA:0:7}"
+            echo "run-number=$RUN_NUMBER"
+            echo "run-url=$RUN_URL"
+            echo "created-at=$CREATED_AT"
+            echo "commit-subject=$COMMIT_SUBJECT"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Check out the commit that was built
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.find-run.outputs.head-sha }}
+
+      - name: Work out the release tag
+        id: version
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [ -n "$TAG_INPUT" ]; then
+            TAG="$TAG_INPUT"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            TAG="$REF_NAME"   # a v* tag was pushed: publish under it
+          else
+            # Default: app version of the commit the artifacts came from
+            VERSION=""
+            if [ -f src/version.py ]; then
+              VERSION="$(grep -oP "__version__\s*=\s*['\"]\K[^'\"]+" src/version.py | head -n1)"
+            fi
+            if [ -z "$VERSION" ] && [ -f setup.py ]; then
+              VERSION="$(grep -oP "^\s*version\s*=\s*['\"]\K[^'\"]+" setup.py | head -n1)"
+            fi
+            TAG="v${VERSION:-0.0.0}"
+          fi
+
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >>"$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: Check the green run still has its artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.find-run.outputs.run-id }}
+          RUN_NUMBER: ${{ steps.find-run.outputs.run-number }}
+        shell: bash
+        run: |
+          ARTIFACTS="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts')"
+
+          echo "Artifacts on green run #$RUN_NUMBER:"
+          jq -r '.[] | "  - \(.name) (\(.size_in_bytes) bytes, expired: \(.expired))"' <<<"$ARTIFACTS"
+
+          EXPIRED="$(jq -r '[.[] | select(.expired == true) | .name] | join(", ")' <<<"$ARTIFACTS")"
+          LISTED="$(jq -r '.[].name' <<<"$ARTIFACTS")"
+
+          MISSING=""
+          for EXPECTED in trained-model SmartAI-Windows SmartAI-Linux SmartAI-macOS; do
+            if ! grep -qx "$EXPECTED" <<<"$LISTED"; then
+              MISSING="$MISSING $EXPECTED"
+            fi
+          done
+
+          if [ -n "$EXPIRED" ] || [ -n "$MISSING" ]; then
+            echo "::error::Green run #$RUN_NUMBER no longer has all the release artifacts (build artifacts are only kept 30-90 days)."
+            if [ -n "$EXPIRED" ]; then
+              echo "  Expired: $EXPIRED"
+            fi
+            if [ -n "$MISSING" ]; then
+              echo "  Missing:$MISSING"
+            fi
+            echo "  Re-run the 'Build SmartAI' workflow on that branch, then run this release workflow again."
+            exit 1
+          fi
+
+      - name: Download model + tokenizer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/model
+
+      - name: Download Windows executable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SmartAI-Windows
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/windows
+
+      - name: Download Linux executable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SmartAI-Linux
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/linux
+
+      - name: Download macOS executable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SmartAI-macOS
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/macos
+
+      - name: Collect and verify the release files
+        shell: bash
+        run: |
+          mkdir -p release
+
+          # best_model.npz + tokenizer.json are zipped inside the trained-model artifact
+          unzip -o downloaded/model/model.zip -d release/
+
+          # One executable per artifact; rename so every release asset has a unique name
+          cp downloaded/windows/SmartAI.exe release/SmartAI-Windows.exe
+          cp downloaded/linux/SmartAI release/SmartAI-Linux
+          cp downloaded/macos/SmartAI release/SmartAI-macOS
+
+          # The zip as-is, so `main.py --download` (which looks for model.zip) keeps working
+          cp downloaded/model/model.zip release/model.zip
+
+          # Every expected file must exist and not be empty
+          for FILE in best_model.npz tokenizer.json model.zip SmartAI-Windows.exe SmartAI-Linux SmartAI-macOS; do
+            if [ ! -s "release/$FILE" ]; then
+              echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
+              exit 1
+            fi
+          done
+
+          # Sanity checks: an .npz is a zip archive; tokenizer.json must be valid JSON
+          unzip -t release/best_model.npz >/dev/null
+          python3 -m json.tool release/tokenizer.json >/dev/null
+
+          # Checksums so downloads can be verified
+          (cd release && sha256sum best_model.npz tokenizer.json model.zip SmartAI-Windows.exe SmartAI-Linux SmartAI-macOS > SHA256SUMS.txt)
+
+          echo "Release contents:"
+          ls -la release/
+
+      - name: Write the release notes
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.find-run.outputs.short-sha }}
+          COMMIT_SUBJECT: ${{ steps.find-run.outputs.commit-subject }}
+          RUN_NUMBER: ${{ steps.find-run.outputs.run-number }}
+          RUN_URL: ${{ steps.find-run.outputs.run-url }}
+          CREATED_AT: ${{ steps.find-run.outputs.created-at }}
+        shell: bash
+        run: |
+          {
+            echo "Artifacts from the latest green **Build SmartAI** run."
+            echo
+            echo "- **Built from:** \`$SHORT_SHA\` — $COMMIT_SUBJECT"
+            echo "- **Build run:** [#$RUN_NUMBER]($RUN_URL)"
+            echo "- **Build finished:** $CREATED_AT"
+            echo "- **App version:** v$VERSION"
+            echo
+            echo "### Files"
+            echo
+            echo "| File | Description |"
+            echo "|------|-------------|"
+            echo "| \`best_model.npz\` | Trained model weights (best checkpoint) |"
+            echo "| \`tokenizer.json\` | Tokenizer / vocabulary for the model |"
+            echo "| \`model.zip\` | The two files above bundled (what \`main.py --download\` fetches) |"
+            echo "| \`SmartAI-Windows.exe\` | Standalone Windows executable |"
+            echo "| \`SmartAI-Linux\` | Standalone Linux executable |"
+            echo "| \`SmartAI-macOS\` | Standalone macOS executable |"
+            echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
+            echo
+            echo "The executables bundle everything they need. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
+          } > notes.md
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ steps.find-run.outputs.head-sha }}
+          name: SmartAI ${{ steps.version.outputs.tag }}
+          body_path: notes.md
+          files: |
+            release/best_model.npz
+            release/tokenizer.json
+            release/model.zip
+            release/SmartAI-Windows.exe
+            release/SmartAI-Linux
+            release/SmartAI-macOS
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ inputs.prerelease == true }}
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
