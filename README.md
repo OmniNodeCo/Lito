@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.0** — see [Versions](#versions).
+**Current version: v1.2.1** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -184,7 +184,7 @@ dictionary, or the local knowledge base, it:
 1. Searches the web for the word or term (a title-match guard rejects
    results for probable misspellings, so typos fall back to "did you mean?")
 2. Saves the summary to `data/learned_dictionary.json`
-3. Bumps the knowledge version (e.g. v1.2.0 → v1.2.1) and tells the user
+3. Bumps the knowledge version (e.g. v1.2.1 → v1.2.2) and tells the user
 
 Learned entries are used for every future lookup — offline, instantly, across
 restarts. Mentioning a learned term again later ("minecraft is my favorite
@@ -196,10 +196,10 @@ the AI knows with `/learned`.
 
 SmartAI carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.0**). Shown
+- **Application version** — the software itself (currently **v1.2.1**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.0 → v1.2.1 → ...).
+  patch number with every word or term the AI learns (v1.2.1 → v1.2.2 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -227,7 +227,7 @@ weights and the from-scratch BPE tokenizer to `checkpoints/`.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 45 tests, no network required
+python tests/test_features.py     # 47 tests, no network required
 ```
 
 ## Releases

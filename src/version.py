@@ -10,7 +10,7 @@ The AI carries two version numbers:
   (see src/dictionary.py), e.g. 1.1.0 -> 1.1.1 -> 1.1.2.
 """
 
-__version__ = '1.2.0'
+__version__ = '1.2.1'
 APP_NAME = 'SmartAI'
 
 

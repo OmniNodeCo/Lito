@@ -68,6 +68,9 @@ class AIBrain:
         self.last_topic = ''
         self._index: Optional[BM25Index] = None
         self._last_knowledge: List[Tuple[str, float]] = []
+        # True once any clause of the current turn got a real answer from a
+        # concrete source (social, dictionary, knowledge, search, learning).
+        self._turn_answered = False
 
     # ------------------------------------------------------------------
     # Knowledge base
@@ -272,6 +275,7 @@ class AIBrain:
 
         # 3. Answer each clause
         clause_answers: List[str] = []
+        self._turn_answered = False
         for clause in analysis.clauses[:4]:
             answer = self._answer_clause(clause, analysis)
             if answer:
@@ -282,8 +286,10 @@ class AIBrain:
 
         response = self._join_answers(clause_answers)
 
-        # 4. Blend in neural generation when it can add something
-        if self.loaded and clause_answers:
+        # 4. Blend in neural generation, but only to fill in fallback turns -
+        #    never on top of a clean answer (social reply, definition,
+        #    search result, learned term, ...)
+        if self.loaded and clause_answers and not self._turn_answered:
             response = self._maybe_blend_neural(response, analysis)
 
         response = self._post_process(response)
@@ -305,39 +311,48 @@ class AIBrain:
         # -- Small talk & identity --------------------------------------
         small = self._match_small_talk(clause)
         if small:
+            self._turn_answered = True
             return small
 
         # -- Explicit search requests ------------------------------------
         if clause.question_type == 'search' and clause.search_query:
             answer = self._answer_search(clause.search_query)
             if answer:
+                self._turn_answered = True
                 return answer
+            self._turn_answered = True
             return self._honest_unknown(clause)
 
         # -- Dictionary intents ------------------------------------------
         if clause.question_type == 'definition':
             answer = self._answer_definition(clause, analysis)
             if answer:
+                self._turn_answered = True
                 return answer
 
         if clause.question_type == 'spell':
+            self._turn_answered = True
             return self._answer_spell(clause)
 
         if clause.question_type == 'isword':
+            self._turn_answered = True
             return self._answer_isword(clause)
 
         if clause.question_type == 'synonyms':
+            self._turn_answered = True
             return self._answer_synonyms(clause)
 
         # -- Yes/no questions --------------------------------------------
         if clause.question_type == 'yesno':
             answer = self._answer_yesno(clause)
             if answer:
+                self._turn_answered = True
                 return answer
 
         # -- Knowledge retrieval -----------------------------------------
         doc_id, score, coverage, knowledge, confident = self._retrieve_knowledge(clause)
         if knowledge and confident:
+            self._turn_answered = True
             return knowledge
 
         # -- Bare topic mention ("minecraft", "quantum computing") ---------
@@ -346,6 +361,7 @@ class AIBrain:
         if not clause.question_type:
             answer = self._answer_bare_topic(clause)
             if answer:
+                self._turn_answered = True
                 return answer
 
         # -- Web search fallback (only for question-like clauses) ----------
@@ -354,6 +370,7 @@ class AIBrain:
         if self.search.enabled and question_like:
             answer = self._answer_search(clause.text)
             if answer:
+                self._turn_answered = True
                 return answer
 
         # -- Weak local knowledge, but only when it genuinely covers the
@@ -362,14 +379,17 @@ class AIBrain:
         usable_weak = knowledge and score >= KNOWLEDGE_WEAK_THRESHOLD and \
             coverage >= 0.5
         if usable_weak:
+            self._turn_answered = True
             return knowledge
         if clause.question_type:
+            self._turn_answered = True
             return self._honest_unknown(clause)
 
         # -- A statement that mentions a word we don't know at all: look it
         #    up online, learn it and answer with what was learned ----------
         answer = self._respond_to_statement(clause)
         if answer:
+            self._turn_answered = True
             return answer
 
         return self._fallback_answer(analysis, clause)
@@ -1021,10 +1041,15 @@ class AIBrain:
                 # Reject the model parroting the chat format back at us
                 if any(m in low for m in ('user:', 'ai:', 'question:', 'answer:')):
                     return response
-                # Require some topical overlap with what was asked
+                # Reject word salad: mostly short function words adds nothing
+                alpha = re.findall(r'[a-z]+', low)
+                long_words = [w for w in alpha if len(w) >= 4]
+                if len(long_words) < max(2, 0.3 * len(alpha)):
+                    return response
+                # Require real topical overlap with what was asked
                 focus = {w for c in analysis.clauses for w in c.focus}
-                neural_words = set(re.findall(r'[a-z]+', low))
-                if focus and not (focus & neural_words):
+                neural_words = set(alpha)
+                if not focus or not (focus & neural_words):
                     return response
                 return self._blend_responses(response, neural, analysis.cleaned)
         except Exception:
@@ -1070,6 +1095,8 @@ class AIBrain:
         if len(new_words) > 5 and len(neural_response) > 30:
             neural_clean = neural_response.split('.')[0] + '.'
             if len(neural_clean) > 20:
+                if neural_clean[0].isalpha():
+                    neural_clean = neural_clean[0].upper() + neural_clean[1:]
                 return f"{kb_response} {neural_clean}"
 
         return kb_response

@@ -637,6 +637,35 @@ def brain_statement_mentions_are_understood():
             'an already-learned word must not be learned again'
 
 
+@test
+def brain_clean_answers_never_get_neural_junk():
+    brain = get_brain()
+    brain.loaded = True
+    # The exact word salad seen in the wild, appended to a social reply
+    brain._generate_with_model = lambda prompt, max_tokens=80: \
+        "is for and process a is and by have of performing of you"
+    try:
+        for text in ('no', 'sorry', 'ok', 'what is gravity?', 'pizza'):
+            response = brain.think(text)
+            assert 'performing' not in response.lower(), f'{text!r}: {response}'
+            assert 'process a' not in response.lower(), f'{text!r}: {response}'
+    finally:
+        brain.loaded = False
+        del brain._generate_with_model
+
+
+@test
+def brain_fallback_turn_still_blends_neural_text():
+    brain = AIBrain(search_enabled=False, dictionary_online=False)
+    brain.loaded = True
+    brain._generate_with_model = lambda prompt, max_tokens=80: \
+        'painting is a relaxing hobby that many people enjoy'
+    brain._retrieve_knowledge = lambda clause: ('', 0.0, 0.0, '', False)
+    response = brain.think('i really enjoy painting')
+    assert 'relaxing' in response.lower(), response
+    assert 'painting' in response.lower(), response
+
+
 # ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------
