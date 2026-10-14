@@ -26,6 +26,7 @@ from .dictionary import EnglishDictionary, WordEntry
 from .nlp import (Analyzer, Clause, Analysis, BM25Index, split_sentences,
                   tokenize, IS_WORD_PATTERNS)
 from .search import WebSearch, SearchResult
+from .extensions import ExtensionManager
 from .version import __version__, format_version
 
 # BM25 score at/above which local knowledge is considered a confident match
@@ -49,7 +50,8 @@ class AIBrain:
     """
 
     def __init__(self, model_dir: str = 'checkpoints', search_enabled: bool = True,
-                 dictionary_online: bool = True, learn_file: Optional[str] = None):
+                 dictionary_online: bool = True, learn_file: Optional[str] = None,
+                 extensions: Optional[ExtensionManager] = None):
         self.model_dir = model_dir
         self.model: Optional[TransformerLM] = None
         self.tokenizer: Optional[BPETokenizer] = None
@@ -71,6 +73,11 @@ class AIBrain:
         # True once any clause of the current turn got a real answer from a
         # concrete source (social, dictionary, knowledge, search, learning).
         self._turn_answered = False
+        # Optional extensions (calculator, dice, ...). A shared manager can
+        # be injected (the GUI does this so its toggles apply immediately);
+        # by default every brain builds its own from extensions/.
+        self.extensions = (extensions if extensions is not None
+                           else ExtensionManager())
 
     # ------------------------------------------------------------------
     # Knowledge base
@@ -246,6 +253,11 @@ class AIBrain:
                 n_layers=config['n_layers'],
                 d_ff=config['d_ff'],
                 max_seq_len=config['max_seq_len'],
+                # v1.1.0 architecture options: old checkpoints simply fall
+                # back to the classic layout.
+                pos_encoding=config.get('pos_encoding', 'learned'),
+                norm=config.get('norm', 'layer'),
+                tie_weights=config.get('tie_weights', False),
             )
             self.model.load(model_path)
             self.model.eval_mode()
@@ -320,6 +332,13 @@ class AIBrain:
         if small:
             self._turn_answered = True
             return small
+
+        # -- Optional extensions (calculator, dice, ...) ------------------
+        if self.extensions is not None:
+            answer = self.extensions.try_handle(text, self)
+            if answer:
+                self._turn_answered = True
+                return answer
 
         # -- Explicit search requests ------------------------------------
         if clause.question_type == 'search' and clause.search_query:
@@ -1107,7 +1126,8 @@ class AIBrain:
                 max_new_tokens=max_tokens,
                 temperature=0.7,
                 top_k=40,
-                top_p=0.9
+                top_p=0.9,
+                repetition_penalty=1.1
             )
             generated_text = self.tokenizer.decode(output_ids.tolist())
 

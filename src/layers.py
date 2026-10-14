@@ -50,6 +50,38 @@ class Linear(Layer):
         return params
 
 
+class TiedLinear(Layer):
+    """Output projection that reuses a shared weight tensor (e.g. the token
+    embedding matrix) via its transpose - used for weight tying.
+
+    out = x @ W.T  where W has shape (vocab, d_model).
+    """
+    def __init__(self, weight: Tensor):
+        super().__init__()
+        self.weight = weight
+
+    def forward(self, x: Tensor) -> Tensor:
+        W = self.weight.data                       # (V, D)
+        out_data = x.data @ W.T                    # (..., V)
+        out = Tensor(out_data, requires_grad=True,
+                     _children=(x, self.weight), _op='tied_linear')
+
+        def _backward():
+            dout = out.grad
+            if self.weight.requires_grad:
+                dW = (dout.reshape(-1, dout.shape[-1]).T
+                      @ x.data.reshape(-1, x.data.shape[-1]))
+                self.weight.grad += dW
+            if x.requires_grad:
+                x.grad += dout @ W
+
+        out._backward = _backward
+        return out
+
+    def parameters(self) -> List[Tensor]:
+        return [self.weight]
+
+
 class Embedding(Layer):
     """Embedding lookup table."""
     def __init__(self, num_embeddings: int, embedding_dim: int):
@@ -126,6 +158,55 @@ class LayerNorm(Layer):
         return [self.gamma, self.beta]
 
 
+class RMSNorm(Layer):
+    """Root Mean Square Layer Normalization (no mean subtraction, no bias).
+
+    y = gamma * x / sqrt(mean(x^2) + eps)
+    """
+    def __init__(self, normalized_shape: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.gamma = Tensor(np.ones((1, normalized_shape)), requires_grad=True)
+
+    def forward(self, x: Tensor) -> Tensor:
+        ms = np.mean(x.data ** 2, axis=-1, keepdims=True)
+        r = 1.0 / np.sqrt(ms + self.eps)
+        x_norm_data = x.data * r
+
+        out_data = self.gamma.data * x_norm_data
+        rms_out = Tensor(out_data, requires_grad=True,
+                         _children=(x, self.gamma), _op='rmsnorm')
+
+        def _backward():
+            dout = rms_out.grad
+            sum_axes = tuple(range(len(dout.shape) - 1))
+
+            if self.gamma.requires_grad:
+                dgamma = np.sum(dout * x_norm_data, axis=sum_axes, keepdims=True)
+                self.gamma.grad += _reduce_grad(dgamma, self.gamma.data.shape)
+
+            if x.requires_grad:
+                # y = g * x * r with r = 1/sqrt(mean(x^2)+eps), so
+                # dx = dg*r - (sum(dg*x)/n) * r^3 * x
+                dg = dout * self.gamma.data
+                n = x.data.shape[-1]
+                x.grad += (dg * r
+                           - (np.sum(dg * x.data, axis=-1, keepdims=True)
+                              * r ** 3 / n) * x.data)
+
+        rms_out._backward = _backward
+        return rms_out
+
+    def parameters(self) -> List[Tensor]:
+        return [self.gamma]
+
+
+def _rotate_half(x: np.ndarray) -> np.ndarray:
+    """[-x2, x1] for x = [x1, x2] split along the last axis."""
+    half = x.shape[-1] // 2
+    return np.concatenate([-x[..., half:], x[..., :half]], axis=-1)
+
+
 class Dropout(Layer):
     """Dropout Regularization."""
     def __init__(self, p: float = 0.1):
@@ -149,19 +230,45 @@ class Dropout(Layer):
 
 
 class MultiHeadAttention(Layer):
-    """Multi-Head Self-Attention Mechanism."""
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+    """Multi-Head Self-Attention Mechanism.
+
+    With rope=True, Rotary Position Embeddings are applied to q and k
+    (per head, NeoX-style half rotation) instead of adding position
+    embeddings at the input.
+    """
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1,
+                 rope: bool = False, rope_theta: float = 10000.0):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_k = d_model // n_heads
+        self.rope = rope
+        self.rope_theta = rope_theta
+        self._rope_cache = {}
 
         self.W_q = Linear(d_model, d_model)
         self.W_k = Linear(d_model, d_model)
         self.W_v = Linear(d_model, d_model)
         self.W_o = Linear(d_model, d_model)
         self.dropout = Dropout(dropout)
+
+    def _rope_tables(self, seq_len: int):
+        """Cached (cos, sin) tables of shape (seq_len, d_k)."""
+        key = (seq_len, self.d_k)
+        if key not in self._rope_cache:
+            inv_freq = 1.0 / (self.rope_theta ** (
+                np.arange(0, self.d_k, 2, dtype=np.float64) / self.d_k))
+            t = np.arange(seq_len, dtype=np.float64)
+            freqs = np.outer(t, inv_freq)              # (T, d_k/2)
+            cos = np.cos(freqs)
+            sin = np.sin(freqs)
+            # duplicate halves: [c, c] and [s, s] to match [x1, x2] layout
+            self._rope_cache[key] = (
+                np.concatenate([cos, cos], axis=-1),
+                np.concatenate([sin, sin], axis=-1),
+            )
+        return self._rope_cache[key]
 
     def forward(self, x: Tensor, mask: Optional[np.ndarray] = None) -> Tensor:
         batch_size = x.data.shape[0] if len(x.data.shape) == 3 else 1
@@ -177,6 +284,12 @@ class MultiHeadAttention(Layer):
         q = reshape_heads(Q.data)
         k = reshape_heads(K.data)
         v = reshape_heads(V.data)
+
+        cos = sin = None
+        if self.rope:
+            cos, sin = self._rope_tables(seq_len)      # (T, d_k) each
+            q = q * cos + _rotate_half(q) * sin
+            k = k * cos + _rotate_half(k) * sin
 
         scale = np.sqrt(self.d_k)
         scores = (q @ k.transpose(0, 1, 3, 2)) / scale
@@ -206,6 +319,12 @@ class MultiHeadAttention(Layer):
 
             dq = ds @ k
             dk = ds.transpose(0, 1, 3, 2) @ q
+
+            if self.rope and cos is not None:
+                # Forward applied y = R x, so backward applies R^T:
+                # dx = d * cos - rotate_half(d) * sin
+                dq = dq * cos - _rotate_half(dq) * sin
+                dk = dk * cos - _rotate_half(dk) * sin
 
             dq_merged = dq.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.d_model)
             dk_merged = dk.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, self.d_model)
@@ -260,13 +379,20 @@ class FeedForward(Layer):
 
 
 class TransformerBlock(Layer):
-    """Transformer Decoder Block."""
-    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1):
+    """Transformer Decoder Block (pre-norm).
+
+    norm='rms' swaps both LayerNorms for RMSNorm; rope=True enables rotary
+    position embeddings inside the attention.
+    """
+    def __init__(self, d_model: int, n_heads: int, d_ff: int, dropout: float = 0.1,
+                 rope: bool = False, norm: str = 'layer'):
         super().__init__()
-        self.attention = MultiHeadAttention(d_model, n_heads, dropout)
+        self.norm = norm
+        self.attention = MultiHeadAttention(d_model, n_heads, dropout, rope=rope)
         self.ff = FeedForward(d_model, d_ff, dropout)
-        self.ln1 = LayerNorm(d_model)
-        self.ln2 = LayerNorm(d_model)
+        norm_cls = RMSNorm if norm == 'rms' else LayerNorm
+        self.ln1 = norm_cls(d_model)
+        self.ln2 = norm_cls(d_model)
         self.dropout1 = Dropout(dropout)
         self.dropout2 = Dropout(dropout)
 

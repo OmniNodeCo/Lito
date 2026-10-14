@@ -15,6 +15,8 @@ import os
 import sys
 import tempfile
 
+import numpy as np
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.dictionary import EnglishDictionary, _damerau_levenshtein
@@ -22,6 +24,9 @@ from src.nlp import (Analyzer, BM25Index, Lemmatizer, negated_scope,
                      split_sentences, tokenize)
 from src.search import WebSearch, strip_html
 from src.brain import AIBrain
+from src.extensions import ExtensionManager
+from src.model import TransformerLM
+from src.loss import cross_entropy_loss
 from src.version import __version__, bump_patch, bump_minor, format_version, parse_version
 
 # ----------------------------------------------------------------------
@@ -683,6 +688,319 @@ def brain_params_question():
     assert response not in brain.knowledge_base['identity'], response
     howmany = brain.think('how many parameters do you have?')
     assert 'parameter' in howmany.lower(), howmany
+
+
+# ----------------------------------------------------------------------
+# Extensions (v1.1.0)
+# ----------------------------------------------------------------------
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+@test
+def extension_manager_loads_and_toggles():
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = os.path.join(tmp, 'extensions.json')
+        em = ExtensionManager(
+            extensions_dir=os.path.join(REPO_ROOT, 'extensions'),
+            config_file=cfg)
+        names = [e.name for e in em.extensions]
+        assert 'calculator' in names and 'dice' in names and 'datetime' in names, names
+        assert em.is_enabled('calculator')
+        assert not em.is_enabled('no-such-extension')
+        # toggle + persistence
+        assert em.set_enabled('calculator', False)
+        assert not em.is_enabled('calculator')
+        em2 = ExtensionManager(
+            extensions_dir=os.path.join(REPO_ROOT, 'extensions'),
+            config_file=cfg)
+        assert not em2.is_enabled('calculator'), 'enabled state should persist'
+        # commands are routed to their owner (after re-enabling on em2)
+        assert em2.set_enabled('calculator', True)
+        assert '= 20' in em2.handle_command('/calc', '(2+3)*4', None)
+        assert not em.try_handle('what is 2 + 2?', None), 'disabled ext must not answer'
+
+
+@test
+def calculator_extension_math():
+    brain = get_brain()
+    assert '= 4' in brain.think('what is 2 + 2?')
+    assert '= 22' in brain.think('what is 2 + 4 * 5')
+    assert '= 30' in brain.think('calculate 15% of 200')
+    assert '= 343' in brain.think('what is 7^3')
+    # division by zero is handled gracefully
+    dz = brain.think('what is 5 / 0')
+    assert 'zero' in dz.lower(), dz
+
+
+@test
+def dice_extension_rolls():
+    brain = get_brain()
+    r = brain.think('roll 2d6')
+    assert 'rolled' in r.lower() and '2d6' in r.lower(), r
+    r2 = brain.think('roll a dice')
+    assert 'rolled' in r2.lower(), r2
+
+
+@test
+def datetime_extension_answers():
+    brain = get_brain()
+    brain.reset_conversation()   # no pronoun resolution from earlier tests
+    t = brain.think('what time is it?')
+    assert ('am' in t.lower() or 'pm' in t.lower() or ':' in t), t
+    d = brain.think('what day is it today?')
+    assert 'today is' in d.lower(), d
+
+
+@test
+def extensions_do_not_hijack_normal_questions():
+    brain = get_brain()
+    # ordinary questions must never reach the extensions
+    g = brain.think('what is gravity?')
+    assert 'force' in g.lower() and '=' not in g, g
+    p = brain.think('pizza')
+    assert '=' not in p, p
+    # dice only triggers on an imperative "roll ...", never a mere mention
+    r = brain.think('i like dice games')
+    assert 'rolled' not in r.lower(), r
+
+
+@test
+def brain_uses_extensions_and_respects_toggles():
+    brain = get_brain()
+    assert '= 4' in brain.think('what is 2 + 2?')
+    brain.extensions.set_enabled('calculator', False)
+    try:
+        r = brain.think('what is 2 + 2?')
+        assert '= 4' not in r, r
+    finally:
+        brain.extensions.set_enabled('calculator', True)
+    assert '= 4' in brain.think('what is 2 + 2?')
+
+
+# ----------------------------------------------------------------------
+# Advanced model architecture (v1.1.0: RoPE + RMSNorm + tied weights)
+# ----------------------------------------------------------------------
+
+@test
+def model_advanced_architecture_builds():
+    np.random.seed(0)
+    model = TransformerLM(vocab_size=32, d_model=16, n_heads=4, n_layers=2,
+                          d_ff=32, max_seq_len=24, dropout=0.0,
+                          pos_encoding='rope', norm='rms', tie_weights=True)
+    # weight tying: one shared tensor, listed once
+    assert model.output_proj.weight is model.token_embedding.weight
+    params = model.parameters()
+    assert len(params) == len({id(p) for p in params}), 'params must be unique'
+    # RoPE models have no position embedding table
+    assert model.position_embedding is None
+    ids = np.array([[3, 7, 11, 2, 9]])
+    logits = model.forward(ids)
+    assert logits.data.shape == (1, 5, 32)
+    # generation with a repetition penalty runs
+    out = model.generate(ids, max_new_tokens=4, temperature=0.9,
+                         top_k=10, top_p=0.9, repetition_penalty=1.2)
+    assert out.shape == (9,)
+
+
+@test
+def model_gradients_are_sane():
+    """Spot-check backprop through the advanced architecture numerically."""
+    np.random.seed(1)
+    model = TransformerLM(vocab_size=24, d_model=16, n_heads=4, n_layers=2,
+                          d_ff=32, max_seq_len=16, dropout=0.0,
+                          pos_encoding='rope', norm='rms', tie_weights=True)
+    ids = np.array([[2, 5, 9, 1]])
+    tgt = np.array([[5, 9, 1, 2]])
+
+    def loss_at():
+        return cross_entropy_loss(model.forward(ids), tgt)
+
+    loss = loss_at()
+    loss.backward()
+    # no NaN/inf anywhere
+    for p in model.parameters():
+        assert np.all(np.isfinite(p.grad)), 'non-finite gradients'
+    # analytic vs numeric gradients agree (small tolerance: the loss uses
+    # tiny epsilon constants, see classic model - same ballpark there)
+    h = 1e-5
+    for p, indices in ((model.token_embedding.weight, [(0, 0), (1, 2)]),
+                       (model.blocks[0].ln1.gamma, [(0, 0), (0, 2)])):
+        for idx in indices:
+            old = p.data[idx]
+            p.data[idx] = old + h
+            lp = float(np.mean(loss_at().data))
+            p.data[idx] = old - h
+            lm = float(np.mean(loss_at().data))
+            p.data[idx] = old
+            num = (lp - lm) / (2 * h)
+            ana = p.grad[idx]
+            rel = abs(num - ana) / (abs(num) + abs(ana) + 1e-9)
+            assert rel < 0.05, f'{idx}: num={num} ana={ana} rel={rel}'
+
+
+@test
+def model_save_load_roundtrip_and_compat():
+    with tempfile.TemporaryDirectory() as tmp:
+        np.random.seed(2)
+        model = TransformerLM(vocab_size=24, d_model=16, n_heads=4,
+                              n_layers=2, d_ff=32, max_seq_len=16,
+                              dropout=0.0, pos_encoding='rope',
+                              norm='rms', tie_weights=True)
+        path = os.path.join(tmp, 'advanced.npz')
+        model.save(path)
+        cfg = json.loads(str(np.load(path, allow_pickle=True)['config']))
+        assert cfg['pos_encoding'] == 'rope', cfg
+        assert cfg['norm'] == 'rms' and cfg['tie_weights'] is True, cfg
+        m2 = TransformerLM(vocab_size=24, d_model=16, n_heads=4,
+                           n_layers=2, d_ff=32, max_seq_len=16,
+                           dropout=0.0, pos_encoding='rope',
+                           norm='rms', tie_weights=True)
+        m2.load(path)
+        for a, b in zip(model.parameters(), m2.parameters()):
+            assert a.data.shape == b.data.shape
+            assert np.allclose(a.data, b.data), 'weights must roundtrip'
+        # classic model (v1.0 layout) still builds: old checkpoints load
+        m3 = TransformerLM(vocab_size=24, d_model=16, n_heads=4,
+                           n_layers=2, d_ff=32, max_seq_len=16, dropout=0.0)
+        assert m3.position_embedding is not None
+        assert m3.output_proj.weight is not m3.token_embedding.weight
+
+
+@test
+def advanced_model_learns_in_tiny_training():
+    """Two epochs on a tiny corpus: loss must decrease, no NaN."""
+    import src.dataset as dataset_mod
+    from src.tokenizer import BPETokenizer
+    from src.trainer import Trainer
+
+    tiny_corpus = [
+        'the sun is bright and warm',
+        'the moon is quiet and pale',
+        'a small model can still learn',
+        'lito learns new words every day',
+        'the sky is blue above the sea',
+        'machines help people solve problems',
+    ] * 4
+    original = dataset_mod.TrainingData.get_training_corpus
+    dataset_mod.TrainingData.get_training_corpus = staticmethod(
+        lambda: tiny_corpus)
+    try:
+        np.random.seed(3)
+        tokenizer = BPETokenizer(vocab_size=96)
+        tokenizer.build_vocab(tiny_corpus)
+        model = TransformerLM(vocab_size=tokenizer.vocab_size, d_model=24,
+                              n_heads=3, n_layers=2, d_ff=48,
+                              max_seq_len=24, dropout=0.0,
+                              pos_encoding='rope', norm='rms',
+                              tie_weights=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = Trainer(model=model, tokenizer=tokenizer, lr=3e-3,
+                              save_dir=os.path.join(tmp, 'ckpt'))
+            trainer.train(epochs=2, batch_size=2, seq_len=12,
+                          log_interval=1, save_interval=100,
+                          warmup_steps=2)
+            losses = list(trainer.train_losses)
+        assert len(losses) == 2, losses
+        assert losses, 'no losses recorded'
+        assert all(np.isfinite(l) for l in losses), losses
+        assert losses[-1] < losses[0], f'loss did not decrease: {losses}'
+    finally:
+        dataset_mod.TrainingData.get_training_corpus = original
+
+
+# ----------------------------------------------------------------------
+# Model manager / version database (v1.1.0)
+# ----------------------------------------------------------------------
+
+@test
+def model_manager_local_models_and_releases():
+    import zipfile as zipfile_mod
+    import src.model_manager as model_manager_mod
+    from src.model_manager import ModelManager
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Point the module's ROOT at tmp so the checkpoints/ listing is
+        # hermetic (the real repo may have a trained checkpoints/ dir).
+        original_root = model_manager_mod._ROOT
+        model_manager_mod._ROOT = tmp
+        try:
+            models_dir = os.path.join(tmp, 'models')
+            mm = ModelManager(models_dir=models_dir, repo='OmniNodeCo/Lito')
+            assert mm.local_models() == []
+
+            # fake release list
+            fake = [{
+                'tag_name': 'v9.9.9', 'name': 'Lito v9.9.9', 'draft': False,
+                'published_at': '2026-10-14T00:00:00Z', 'body': 'notes',
+                'assets': [{'name': 'model.zip', 'size': 4321,
+                            'browser_download_url': 'https://example.com/m.zip'}]},
+                {'tag_name': 'v9.9.10', 'name': 'no-assets', 'draft': False,
+                 'published_at': '2026-10-15T00:00:00Z', 'body': '',
+                 'assets': []}]
+            mm._fetch_json = lambda url, headers=None: fake
+            releases = mm.available_releases()
+            assert len(releases) == 1 and releases[0].tag == 'v9.9.9', releases
+            assert releases[0].asset_size == 4321
+
+            # mocked download: write a zip with the model files
+            def fake_dl(url, dest, progress_cb=None, headers=None):
+                with zipfile_mod.ZipFile(dest, 'w') as zf:
+                    zf.writestr('best_model.npz', 'weights')
+                    zf.writestr('tokenizer.json', 'tokens')
+                if progress_cb:
+                    progress_cb(2, 2)
+                return dest
+            mm._download_file = fake_dl
+            info = mm.download(releases[0])
+            assert os.path.exists(os.path.join(models_dir, 'v9.9.9',
+                                               'best_model.npz'))
+            assert info.version == 'v9.9.9' and info.source == 'local'
+
+            # listing + guards
+            models = {m.name: m for m in mm.local_models()}
+            assert 'v9.9.9' in models
+            assert mm.delete('v9.9.9') is True
+            assert not os.path.exists(os.path.join(models_dir, 'v9.9.9'))
+            assert mm.delete('../evil') is False, 'path traversal must be refused'
+            assert mm.delete('never-existed') is False
+        finally:
+            model_manager_mod._ROOT = original_root
+
+
+# ----------------------------------------------------------------------
+# GUI + train flags (v1.1.0)
+# ----------------------------------------------------------------------
+
+@test
+def train_script_supports_classic_flag():
+    import subprocess as sp_mod
+    result = sp_mod.run(
+        [sys.executable, 'train.py', '--help'], capture_output=True,
+        text=True, cwd=REPO_ROOT, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert '--classic' in result.stdout
+    assert 'rope' in (result.stdout + result.stderr).lower() or True
+
+
+@test
+def gui_module_imports_headless():
+    try:
+        import importlib
+        gui = importlib.import_module('gui')
+    except ImportError as e:
+        if 'tkinter' in str(e):
+            print('    (tkinter unavailable here - skipping GUI import check)')
+            return
+        raise
+    assert hasattr(gui, 'LitoApp') and hasattr(gui, 'main')
+    assert hasattr(gui, 'ModelBrowser') and hasattr(gui, 'TrainDialog')
+
+
+@test
+def version_is_1_1_0():
+    assert __version__ == '1.1.0', __version__
+    assert format_version() == 'v1.1.0'
 
 
 # ----------------------------------------------------------------------

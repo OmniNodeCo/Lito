@@ -9,6 +9,9 @@ venv/
 # Model checkpoints (trained locally or downloaded from releases)
 checkpoints/
 
+# Downloaded models (from the version database / GitHub Releases)
+models/
+
 # Runtime caches (web search / online dictionary API responses)
 data/cache/
 
@@ -19,3 +22,6 @@ data/learned_dictionary.json
 build/
 dist/
 *.spec
+
+# Extension enable/disable state (runtime, per user)
+data/extensions.json

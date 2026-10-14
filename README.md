@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.0.3** — see [Versions](#versions).
+**Current version: v1.1.0** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -16,6 +16,14 @@ English dictionary, and live web search.
 
 ## What it can do
 
+- **Desktop GUI** — an Ollama-style app (`python gui.py`, tkinter only, no
+  extra dependencies): model sidebar, chat pane, and a **version database**
+  browser that lists every model published on GitHub Releases and downloads
+  them with a progress bar. Train new models in the background without
+  leaving the chat
+- **Optional extensions** — small plugins in `extensions/` add instant
+  skills (calculator, dice, date & time ship built-in). Toggle them per
+  session with `/extensions on|off <name>` or in the GUI; the state persists
 - **Chat and answer questions** using a transformer language model trained from
   scratch, a built-in knowledge base and BM25 knowledge retrieval
 - **Natural conversation** — apologies ("sorry"), acknowledgements ("ok",
@@ -34,12 +42,16 @@ English dictionary, and live web search.
   ("minecraft") or a statement ("i have been playing minecraft"), Lito
   searches the web, adds it to its own learned dictionary and remembers it
   offline forever after (each learned entry bumps the AI's knowledge version)
+- **A more advanced model** (v1.1.0) — rotary position embeddings (RoPE),
+  RMSNorm, tied embedding/output weights and repetition-penalized sampling,
+  all config-gated so v1.0 checkpoints keep loading unchanged
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt   # just numpy
-python main.py                    # chat (trains or downloads a model if none found)
+python gui.py                     # desktop app (chat + models + training)
+python main.py                    # terminal chat (trains or downloads a model if none found)
 ```
 
 Or run without a model — the dictionary, knowledge base and search all work
@@ -89,6 +101,12 @@ python main.py --chat-only
 🤖 AI: Quantum entanglement (term): Quantum entanglement is the phenomenon whereby
        the quantum states of two or more particles become correlated...
        (answered from the learned dictionary, no web needed)
+
+🧑 You: what is 15% of 200?
+🤖 AI: (15/100)*200 = 30 🧮
+
+🧑 You: roll 2d6
+🤖 AI: 🎲 You rolled 2d6: 4 + 3 = 7
 ```
 
 ## Chat commands
@@ -103,12 +121,20 @@ python main.py --chat-only
 | `/search <query>` | Search the web (Wikipedia + DuckDuckGo) |
 | `/search on` / `off` | Toggle automatic web search |
 | `/generate <prompt>` | Raw neural generation from the trained model |
+| `/extensions` | List extensions and their state |
+| `/extensions on\|off <name>` | Enable/disable an extension (persisted) |
+| `/calc <expr>` | Calculator extension — evaluate a math expression |
+| `/roll 2d6` | Dice extension — roll dice |
+| `/time` | Date & time extension — show current date and time |
 | `/info` | Model, dictionary, version and search status |
 | `/reset`, `/help`, `/quit` | Conversation management |
 
 ## CLI options
 
 ```
+python gui.py                       # desktop app (Ollama-style)
+python gui.py --dir models/v1.0.3   # start with a specific model
+python gui.py --no-search           # start with web search off
 python main.py --train              # train the model locally, then chat
 python main.py --download           # download a trained model from GitHub Releases
 python main.py --chat-only          # skip the model entirely
@@ -132,18 +158,84 @@ user input
 ┌──────────────────────────────────────────────────────────┐
 │ Router (src/brain.py)                                    │
 │ 1. small talk & identity                                 │
-│ 2. dictionary intents: define / spell / is-a-word /      │
+│ 2. optional extensions (calculator, dice, ...)           │
+│ 3. dictionary intents: define / spell / is-a-word /      │
 │    synonyms (src/dictionary.py, WordNet offline)         │
 │    └─ unknown word? search online, LEARN it, remember it │
-│ 3. BM25 retrieval over knowledge base + corpus           │
+│ 4. BM25 retrieval over knowledge base + corpus           │
 │    (score + weighted-coverage confidence)                │
-│ 4. web search fallback (src/search.py, Wikipedia + DDG)  │
-│ 5. neural blending from the trained model                │
+│ 5. web search fallback (src/search.py, Wikipedia + DDG)  │
+│ 6. neural blending from the trained model                │
 └──────────────────────────────────────────────────────────┘
    │
    ▼
 combined answer (all clause answers joined)
 ```
+
+### Desktop GUI (`gui.py`)
+
+An Ollama-style app built on tkinter (bundled with Python — nothing extra
+to install):
+
+- **Left sidebar** — the model list (your trained `checkpoints/` plus
+  everything downloaded), *Download…* opens the **version database**
+  browser listing all GitHub Releases with sizes and dates; ⟳ refreshes,
+  🗑 deletes, ⚙ *Train…* opens the training dialog
+- **Chat pane** — same brain as the terminal chat, including slash
+  commands; Enter sends, Shift+Enter inserts a newline
+- **Extensions & settings** — per-extension checkboxes and a web-search
+  toggle that take effect immediately
+- **Training dialog** — pick hyperparameters (or the classic
+  architecture) and watch `train.py` stream its output live; the finished
+  model is loaded automatically
+
+Model loading, downloads and training all run on background threads, so
+the UI never freezes. `ModelManager` (`src/model_manager.py`) is the
+version-database layer behind it: local discovery, release listing and
+download — usable from scripts too.
+
+### Extensions (`extensions/`)
+
+An extension is a single Python file in `extensions/`:
+
+```python
+NAME = "calculator"
+VERSION = "1.0.0"
+DESCRIPTION = "What shows up in /extensions"
+COMMANDS = {"/calc": "evaluate a math expression"}
+
+def can_handle(text: str) -> bool:
+    ...   # only claim what you can really answer (be conservative!)
+
+def handle(text: str, brain) -> str:
+    ...   # return the reply, or '' to decline
+
+def handle_command(cmd: str, args: str, brain) -> str:
+    ...   # optional: answer one of your COMMANDS
+```
+
+Lito asks every enabled extension in turn after small talk and before the
+dictionary; the first non-empty reply wins. Enabled/disabled state is
+persisted in `data/extensions.json`. Built-ins: **calculator** ("what is
+2 + 2 * 10", "15% of 200"), **dice** ("roll 2d6") and **datetime** ("what
+time is it?").
+
+### Advanced model architecture (v1.1.0)
+
+`TransformerLM` gained three config-gated options (stored inside every
+checkpoint, so **old v1.0 checkpoints load unchanged**):
+
+| Option | Classic (v1.0) | Advanced (default) |
+|--------|----------------|--------------------|
+| `pos_encoding` | learned position embeddings | **RoPE** (rotary, per-head, extrapolates past training length) |
+| `norm` | LayerNorm | **RMSNorm** (no mean/bias, faster) |
+| `tie_weights` | untied output projection | **tied** with the token embedding |
+
+Plus a CTRL-style **repetition penalty** in `generate()` (the brain uses
+1.1) so long answers don't loop. All backward passes — attention with
+RoPE rotation, RMSNorm, tied projection — are hand-written and verified
+against numerical gradients in the test suite. Train the old layout with
+`python train.py --classic`.
 
 ### Complex sentence understanding (`src/nlp.py`)
 
@@ -196,10 +288,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.0.3**). Shown
+- **Application version** — the software itself (currently **v1.1.0**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.0.3 → v1.0.4 → ...).
+  patch number with every word or term the AI learns (v1.1.0 → v1.1.1 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -217,18 +309,26 @@ says so honestly instead of inventing an answer.
 ### Training (`train.py`)
 
 ```bash
-python train.py --epochs 30 --d_model 128 --n_layers 4
+python train.py --epochs 30 --d_model 128 --n_layers 4   # advanced arch (default)
+python train.py --classic ...                            # v1.0 architecture
 ```
 
 Trains the from-scratch transformer (numpy autograd engine in `src/tensor.py`,
 layers in `src/layers.py`) on the built-in corpus in `src/dataset.py`, saving
-weights and the from-scratch BPE tokenizer to `checkpoints/`.
+weights and the from-scratch BPE tokenizer to `checkpoints/`. The default
+architecture is RoPE + RMSNorm + tied weights; `--classic` trains the v1.0
+layout.
 
 ## Tests
 
 ```bash
-python tests/test_features.py     # 49 tests, no network required
+python tests/test_features.py     # 63 tests, no network required
 ```
+
+Covers the dictionary, NLP pipeline, search parsing, brain routing, the
+extension system (including numerical-gradient checks of the new RoPE /
+RMSNorm / tied-weight backward passes), the model manager and the GUI
+module.
 
 ## Releases
 
@@ -245,15 +345,21 @@ Two GitHub Actions workflows handle packaging and publishing:
   was built (e.g. `v1.0.3`). Trigger it from the Actions tab
   ("Release Lito" -> "Run workflow"), or push a `v*` tag.
 
-`python main.py --download` fetches the model from the latest release, so a
-published release works with the existing downloader right away.
+`python main.py --download` fetches the model from the latest release, and
+the GUI's *Download…* dialog lists every published version (the "version
+database") and downloads it into `models/<tag>/` — releases work with both
+right away.
 
 ## Project layout
 
 ```
 main.py               chat entry point
+gui.py                desktop app entry point (Ollama-style)
 train.py              training entry point
-src/                  all source (model, NLP, dictionary, search, chat)
+src/                  all source (model, NLP, dictionary, search, chat,
+                      extensions loader, model manager / version database)
+extensions/           optional skill plugins (calculator, dice, datetime)
+models/               models downloaded from the version database (created)
 data/                 offline dictionary data (see data/README.md)
 tools/                dictionary build scripts
 tests/                feature tests

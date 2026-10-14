@@ -5,6 +5,11 @@ Train the Lito model from scratch.
 Usage:
     python train.py [--epochs N] [--lr RATE] [--d_model DIM] [--n_layers N]
                     [--n_heads N] [--batch_size N] [--seq_len N]
+                    [--classic]
+
+The default architecture ("advanced") uses rotary position embeddings
+(RoPE), RMSNorm and tied embedding/output weights. Pass --classic to
+train the v1.0-style model (learned positions, LayerNorm, untied).
 """
 
 import argparse
@@ -38,6 +43,9 @@ def parse_args():
     parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay')
     parser.add_argument('--dropout', type=float, default=0.1, help='Dropout rate')
     parser.add_argument('--warmup_steps', type=int, default=50, help='Warmup steps')
+    parser.add_argument('--classic', action='store_true',
+                        help='Use the classic v1.0 architecture (learned positions, '
+                             'LayerNorm, untied weights) instead of the advanced one')
     return parser.parse_args()
 
 
@@ -60,9 +68,15 @@ def main():
     print(f"  Vocabulary size: {tokenizer.vocab_size}")
 
     # Step 2: Create model
+    if args.classic:
+        pos_encoding, norm, tie_weights = 'learned', 'layer', False
+    else:
+        pos_encoding, norm, tie_weights = 'rope', 'rms', True
+    arch = 'classic (v1.0)' if args.classic else 'advanced (RoPE + RMSNorm + tied)'
     print(f"\n[2/4] Creating model...")
     print(f"  Config: d_model={args.d_model}, n_layers={args.n_layers}, "
           f"n_heads={args.n_heads}, d_ff={args.d_ff}")
+    print(f"  Architecture: {arch}")
 
     model = TransformerLM(
         vocab_size=tokenizer.vocab_size,
@@ -72,6 +86,9 @@ def main():
         d_ff=args.d_ff,
         max_seq_len=args.max_seq_len,
         dropout=args.dropout,
+        pos_encoding=pos_encoding,
+        norm=norm,
+        tie_weights=tie_weights,
     )
 
     # Step 3: Train

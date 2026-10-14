@@ -37,6 +37,7 @@ class ChatInterface:
         '/synonyms': '/synonyms <word> - list synonyms',
         '/words': '/words <prefix> - autocomplete words from the dictionary',
         '/learned': 'Show words and terms the AI learned from the web',
+        '/extensions': '/extensions - list extensions; /extensions on|off <name> - toggle one',
     }
 
     def __init__(self, model_dir: str = 'checkpoints', search_enabled: bool = True,
@@ -159,8 +160,17 @@ class ChatInterface:
         elif cmd == '/learned':
             self._show_learned()
 
+        elif cmd == '/extensions':
+            self._show_extensions(argument)
+
         else:
-            print(f"Unknown command: {cmd}. Type /help for available commands.")
+            # Maybe one of the extensions owns this command (/calc, /roll…)
+            reply = self.brain.extensions.handle_command(cmd, argument,
+                                                         self.brain)
+            if reply:
+                print(f"\n🧩 {reply}")
+            else:
+                print(f"Unknown command: {cmd}. Type /help for available commands.")
 
         return True
 
@@ -189,6 +199,32 @@ class ChatInterface:
                 line += f"  [{learned_at[:10]}]"
             print(line)
         print("These are remembered offline in data/learned_dictionary.json.")
+
+    def _show_extensions(self, argument: str = ''):
+        """List extensions, or toggle one with 'on|off <name>'."""
+        manager = self.brain.extensions
+        argument = (argument or '').strip().lower()
+        if argument.startswith(('on ', 'off ')):
+            action, name = argument.split(' ', 1)
+            if manager.set_enabled(name, action == 'on'):
+                print(f"\n✅ Extension '{name}' is now {action}.")
+            else:
+                print(f"\n❌ No extension named '{name}'. "
+                      f"Try: /extensions")
+            return
+        extensions = manager.extensions
+        if not extensions:
+            print("\n🧩 No extensions installed (drop .py files into "
+                  "extensions/).")
+            return
+        print(f"\n🧩 Extensions ({sum(manager.is_enabled(e.name) for e in extensions)}"
+              f"/{len(extensions)} enabled):")
+        for ext in extensions:
+            state = '✅ on ' if manager.is_enabled(ext.name) else '⬜ off'
+            print(f"  {state}  {ext.name} v{ext.version} - {ext.description}")
+            for c, help_text in ext.commands.items():
+                print(f"          {c:10s} {help_text}")
+        print("Toggle with: /extensions on|off <name>")
 
     def _handle_search(self, argument: str) -> None:
         if not argument:
