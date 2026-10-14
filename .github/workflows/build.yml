@@ -81,12 +81,15 @@ jobs:
           - os: windows-latest
             artifact_name: Lito-Windows
             binary_name: Lito.exe
+            gui_binary_name: LitoGUI.exe
           - os: ubuntu-latest
             artifact_name: Lito-Linux
             binary_name: Lito
+            gui_binary_name: LitoGUI
           - os: macos-latest
             artifact_name: Lito-macOS
             binary_name: Lito
+            gui_binary_name: LitoGUI
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -116,12 +119,31 @@ jobs:
               z.extractall('checkpoints')
           "
 
-      - name: Build executable with PyInstaller
+      - name: Install tkinter (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Build executables with PyInstaller
         run: python build.py
 
-      - name: Upload Executable Artifact
+      - name: Check built binaries
+        shell: bash
+        run: |
+          ls -la dist
+          test -f "dist/${{ matrix.binary_name }}" || { echo "::error::missing dist/${{ matrix.binary_name }}"; exit 1; }
+          if [ -f "dist/${{ matrix.gui_binary_name }}" ]; then
+            echo "GUI executable OK: dist/${{ matrix.gui_binary_name }}"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            echo "::error::missing GUI executable dist/${{ matrix.gui_binary_name }}"
+            exit 1
+          else
+            echo "::warning::GUI executable skipped on this runner (tkinter unavailable)"
+          fi
+
+      - name: Upload Executable Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.binary_name }}
+          path: dist
+          if-no-files-found: error
           retention-days: 90

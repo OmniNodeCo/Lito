@@ -29,6 +29,13 @@ from tkinter import ttk, messagebox, font as tkfont
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
+# When frozen (PyInstaller onefile), bundled read-only data (src, data,
+# extensions, checkpoints) is extracted into a temporary dir and ROOT
+# points there. Files the user creates at runtime (downloaded models)
+# belong next to the real executable instead, so they survive restarts.
+FROZEN = bool(getattr(sys, 'frozen', False))
+APP_DIR = os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else ROOT
+
 from src.brain import AIBrain
 from src.extensions import ExtensionManager
 from src.model_manager import ModelManager, format_size
@@ -56,13 +63,15 @@ class LitoApp(tk.Tk):
         self.geometry('1080x700')
         self.minsize(880, 580)
 
-        self.mm = ModelManager(models_dir=os.path.join(ROOT, 'models'))
+        self.mm = ModelManager(models_dir=os.path.join(APP_DIR, 'models'))
         self.ext = ExtensionManager()
         self.q: "queue.Queue" = queue.Queue()
         self.brain: AIBrain = None
         self.brain_dir = None
         self.train_proc = None
-        self.startup_dir = model_dir or 'checkpoints'
+        # Default model: the bundled/repo checkpoints dir (absolute, so it
+        # works no matter the current working directory).
+        self.startup_dir = model_dir or os.path.join(ROOT, 'checkpoints')
 
         self._build_style()
         self._build_ui(search_enabled)
@@ -631,6 +640,13 @@ class TrainDialog(tk.Toplevel):
                    command=self._start).pack(pady=(0, 12))
 
     def _start(self):
+        if FROZEN:
+            self._log_line('Training needs the Python source code and is not '
+                           'available in the packaged app.')
+            self._log_line('Use Download to fetch trained models, or run '
+                           '"python train.py" from a source checkout.')
+            return
+
         cmd = [sys.executable, os.path.join(ROOT, 'train.py')]
         for key, entry in self.entries.items():
             value = entry.get().strip()

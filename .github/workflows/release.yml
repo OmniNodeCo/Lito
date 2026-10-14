@@ -198,11 +198,17 @@ jobs:
           cp downloaded/linux/Lito release/Lito-Linux
           cp downloaded/macos/Lito release/Lito-macOS
 
+          # GUI executables (LitoGUI). Windows is required; the others are
+          # optional because a runner without tkinter skips the GUI build.
+          cp downloaded/windows/LitoGUI.exe release/LitoGUI-Windows.exe
+          if [ -f downloaded/linux/LitoGUI ]; then cp downloaded/linux/LitoGUI release/LitoGUI-Linux; fi
+          if [ -f downloaded/macos/LitoGUI ]; then cp downloaded/macos/LitoGUI release/LitoGUI-macOS; fi
+
           # The zip as-is, so `main.py --download` (which looks for model.zip) keeps working
           cp downloaded/model/model.zip release/model.zip
 
           # Every expected file must exist and not be empty
-          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe Lito-Linux Lito-macOS; do
+          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe LitoGUI-Windows.exe Lito-Linux Lito-macOS; do
             if [ ! -s "release/$FILE" ]; then
               echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
               exit 1
@@ -214,7 +220,7 @@ jobs:
           python3 -m json.tool release/tokenizer.json >/dev/null
 
           # Checksums so downloads can be verified
-          (cd release && sha256sum best_model.npz tokenizer.json model.zip Lito-Windows.exe Lito-Linux Lito-macOS > SHA256SUMS.txt)
+          (cd release && sha256sum * > SHA256SUMS.txt)
 
           echo "Release contents:"
           ls -la release/
@@ -245,7 +251,10 @@ jobs:
             echo "| \`best_model.npz\` | Trained model weights (best checkpoint) |"
             echo "| \`tokenizer.json\` | Tokenizer / vocabulary for the model |"
             echo "| \`model.zip\` | The two files above bundled (what \`main.py --download\` fetches) |"
-            echo "| \`Lito-Windows.exe\` | Standalone Windows executable |"
+            echo "| \`Lito-Windows.exe\` | Standalone Windows executable (terminal chat) |"
+            echo "| \`LitoGUI-Windows.exe\` | Standalone Windows GUI app (chat, model downloads, training) |"
+            echo "| \`LitoGUI-Linux\` | Standalone Linux GUI app (published when the runner built it) |"
+            echo "| \`LitoGUI-macOS\` | Standalone macOS GUI app (published when the runner built it) |"
             echo "| \`Lito-Linux\` | Standalone Linux executable |"
             echo "| \`Lito-macOS\` | Standalone macOS executable |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
@@ -261,13 +270,7 @@ jobs:
           name: Lito ${{ steps.version.outputs.tag }}
           body_path: notes.md
           files: |
-            release/best_model.npz
-            release/tokenizer.json
-            release/model.zip
-            release/Lito-Windows.exe
-            release/Lito-Linux
-            release/Lito-macOS
-            release/SHA256SUMS.txt
+            release/*
           fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ inputs.prerelease == true }}

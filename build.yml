@@ -1,26 +1,35 @@
 # Lito Build Configuration
 # ===========================
 
-# Application name
+# Default application name (fallback for targets without their own name)
 name: Lito
-
-# Main entry point
-entry_point: main.py
 
 # Build as single executable
 onefile: true
 
-# Console application (set to false for GUI)
-console: true
-
 # Icon file (optional, .ico for Windows)
 # icon: assets/icon.ico
 
-# Additional data directories to include
+# Additional data directories to include (shared by all targets)
 extra_data: [checkpoints, src, data, extensions]
 
-# Hidden imports that PyInstaller might miss
+# Hidden imports that PyInstaller might miss (shared by all targets)
 hidden_imports: [numpy, json, re, os, sys, time, argparse]
+
+# Build targets - one standalone executable each:
+#   name             output name (dist/<name>)
+#   entry_point      script to freeze
+#   console          true = terminal app, false = windowed GUI app
+#   requires_tkinter skip with a warning when tkinter is unavailable
+#                    (e.g. a runner without python3-tk)
+targets:
+  - name: Lito
+    entry_point: main.py
+    console: true
+  - name: LitoGUI
+    entry_point: gui.py
+    console: false
+    requires_tkinter: true
 
 # Platform-specific settings
 # windows:

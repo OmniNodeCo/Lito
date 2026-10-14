@@ -322,13 +322,13 @@ layout.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 63 tests, no network required
+python tests/test_features.py     # 64 tests, no network required
 ```
 
 Covers the dictionary, NLP pipeline, search parsing, brain routing, the
 extension system (including numerical-gradient checks of the new RoPE /
-RMSNorm / tied-weight backward passes), the model manager and the GUI
-module.
+RMSNorm / tied-weight backward passes), the model manager, the GUI module
+and the build configuration.
 
 ## Releases
 
@@ -336,8 +336,10 @@ Two GitHub Actions workflows handle packaging and publishing:
 
 - **Build** (`.github/workflows/build.yml`) — on every push to main it runs
   the tests, trains a fresh model, packages `best_model.npz` +
-  `tokenizer.json`, builds standalone Windows/Linux/macOS executables, and
-  keeps the `latest-model` release up to date.
+  `tokenizer.json`, builds standalone Windows/Linux/macOS executables — a
+  terminal chat app (`Lito`) *and* a GUI app (`LitoGUI`, built from
+  `gui.py` with tkinter bundled) — and keeps the `latest-model` release up
+  to date.
 - **Release** (`.github/workflows/release.yml`) — publishes a versioned
   release from the latest green build run. It finds the most recent
   successful build, downloads its model, tokenizer and executables, and

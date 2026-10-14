@@ -998,6 +998,27 @@ def gui_module_imports_headless():
 
 
 @test
+def build_config_defines_console_and_gui_targets():
+    import build as build_mod
+    cwd = os.getcwd()
+    os.chdir(REPO_ROOT)
+    try:
+        config = build_mod.load_build_config()
+    finally:
+        os.chdir(cwd)
+    targets = {t['name']: t for t in config['targets']}
+    assert 'Lito' in targets and 'LitoGUI' in targets, targets
+    assert targets['Lito']['entry_point'] == 'main.py'
+    assert targets['Lito']['console'] is True
+    assert targets['LitoGUI']['entry_point'] == 'gui.py'
+    assert targets['LitoGUI']['console'] is False
+    assert targets['LitoGUI'].get('requires_tkinter') is True
+    # data dirs shipped with every executable
+    assert 'extensions' in config['extra_data']
+    assert 'data' in config['extra_data']
+
+
+@test
 def version_is_1_1_0():
     assert __version__ == '1.1.0', __version__
     assert format_version() == 'v1.1.0'
