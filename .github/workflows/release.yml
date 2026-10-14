@@ -148,6 +148,7 @@ jobs:
             fi
             if [ -n "$MISSING" ]; then
               echo "  Missing:$MISSING"
+              echo "  (lito-desktop only exists when the build ran from a v1.2.0+ commit with the Go desktop job - check which commit the green run was built from.)"
             fi
             echo "  Re-run the 'Build Lito' workflow on that branch, then run this release workflow again."
             exit 1
