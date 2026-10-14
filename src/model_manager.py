@@ -8,7 +8,7 @@ Model manager + version database for Lito.
 - `checkpoints/` (created by `python train.py`) is listed as a local
   model too, so freshly trained models show up next to downloaded ones.
 
-Used by the GUI (gui.py) but has no UI dependencies itself.
+Used by the API server / desktop app but has no UI dependencies itself.
 """
 
 import io

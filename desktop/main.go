@@ -1,14 +1,20 @@
-// Command lito-desktop is the Lito desktop app, Ollama-style: it starts
-// the Python backend (server.py), serves the embedded web UI on a local
-// port and proxies /api/* to the backend.
+// Command lito-desktop is the Lito desktop app, Ollama-style: it serves
+// the embedded web UI on a local port and runs the Python AI engine
+// (server.py) as a child process, proxying /api/* to it.
+//
+// The UI always starts, even when Python or server.py can't be found:
+// the page then shows a banner explaining what is missing, and the app
+// keeps looking for the engine in the background so it recovers on its
+// own. Diagnostics go to lito-desktop.log next to the executable (the
+// Windows build has no console window).
 //
 // Build:
 //
 //	go build -trimpath -ldflags "-s -w" .
 //
-// Run (from a Lito source checkout with Python + numpy installed):
+// Run (from a Lito release bundle or source checkout):
 //
-//	./lito-desktop            # or lito-desktop.exe on Windows
+//	./lito-desktop            # or LitoDesktop-Windows.exe
 //
 // Flags:
 //
@@ -25,6 +31,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -38,6 +45,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -46,6 +54,237 @@ import (
 var uiFS embed.FS
 
 const defaultPort = 5486
+
+// Backend states reported by /api/desktop/status.
+const (
+	stateStarting = "starting" // engine launching, not answering yet
+	stateReady    = "ready"    // engine answered /api/version
+	stateMissing  = "missing"  // python or server.py not found (still retrying)
+	stateError    = "error"    // engine crashed / never came up (retrying)
+)
+
+// engineDownHost is a host that never answers: the proxy sends requests
+// there when no engine URL is known yet, so they fail fast with the
+// standard 502 JSON instead of hanging.
+const engineDownHost = "engine-not-started.invalid"
+
+// backendManager owns the Python engine process and its state.
+type backendManager struct {
+	mu    sync.Mutex
+	state string
+	msg   string
+
+	backendURL string // what the proxy talks to ("" until the engine spawns)
+	pythonBin  string // from -python flag ("" = auto-detect)
+	external   bool   // true when -backend was given: probe, don't spawn
+
+	child     *exec.Cmd
+	exited    bool          // true once the child process is gone
+	childDone chan struct{} // closed when the child exits
+}
+
+func (m *backendManager) set(state, msg string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state != state || m.msg != msg {
+		log.Printf("engine state: %s (%s)", state, msg)
+	}
+	m.state = state
+	m.msg = msg
+}
+
+func (m *backendManager) snapshot() (string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.state, m.msg
+}
+
+// currentBackend returns the URL the proxy should target right now.
+func (m *backendManager) currentBackend() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.backendURL
+}
+
+// run manages the engine for the whole life of the app: discover python +
+// server.py, spawn the engine, wait for it to answer, restart it when it
+// dies, and keep retrying discovery while it is missing. It only returns
+// when ctx is done.
+func (m *backendManager) run(ctx context.Context) {
+	if m.external {
+		m.runExternal(ctx)
+		return
+	}
+	for ctx.Err() == nil {
+		if !m.hasLiveChild() {
+			m.spawn(ctx)
+			if !m.hasLiveChild() {
+				continue // engine missing: spawn() already waited, retry
+			}
+		}
+		m.monitor(ctx)
+	}
+	m.stopChild()
+}
+
+func (m *backendManager) hasLiveChild() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.child != nil && !m.exited
+}
+
+// runExternal just probes a user-provided backend URL.
+func (m *backendManager) runExternal(ctx context.Context) {
+	m.set(stateStarting, "Connecting to the AI engine at "+m.backendURL+"…")
+	for ctx.Err() == nil {
+		if probeOK(m.backendURL) {
+			m.set(stateReady, "")
+		} else {
+			m.set(stateError, "The AI engine at "+m.backendURL+" is not answering. Is `python server.py` running?")
+		}
+		sleepCtx(ctx, 2*time.Second)
+	}
+}
+
+// spawn looks for python + server.py and starts the engine. When either
+// is missing it records a helpful message, waits a moment, and returns
+// without a child (the caller tries again).
+func (m *backendManager) spawn(ctx context.Context) {
+	m.stopChild()
+
+	py := m.pythonBin
+	if py == "" {
+		py = findPython()
+	}
+	serverPy := findServerPy()
+	if py == "" || serverPy == "" {
+		var msg string
+		switch {
+		case py == "" && serverPy == "":
+			msg = "Neither Python nor the AI engine (server.py) was found. Install Python 3 with numpy (python.org) and keep this app inside its Lito folder - Lito keeps looking for both…"
+		case py == "":
+			msg = "Python was not found. Install Python 3 with numpy from python.org - Lito keeps looking…"
+		default:
+			msg = "The AI engine (server.py) was not found. Put this app back in its Lito folder (next to server.py, src/ and checkpoints/) or run it from a Lito checkout - Lito keeps looking…"
+		}
+		m.set(stateMissing, msg)
+		sleepCtx(ctx, 5*time.Second)
+		return
+	}
+
+	bport, err := freePort()
+	if err != nil {
+		m.set(stateError, "could not find a free port for the engine: "+err.Error())
+		sleepCtx(ctx, 5*time.Second)
+		return
+	}
+	m.mu.Lock()
+	m.backendURL = fmt.Sprintf("http://127.0.0.1:%d", bport)
+	m.mu.Unlock()
+
+	child := exec.Command(py, serverPy,
+		"--host", "127.0.0.1",
+		"--port", strconv.Itoa(bport),
+		"--no-browser")
+	child.Dir = filepath.Dir(serverPy) // so checkpoints/ & data/ resolve next to server.py
+	child.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
+	child.Stdout = log.Writer()
+	child.Stderr = log.Writer()
+	if err := child.Start(); err != nil {
+		m.set(stateError, "could not start the AI engine: "+err.Error())
+		sleepCtx(ctx, 5*time.Second)
+		return
+	}
+
+	done := make(chan struct{})
+	m.mu.Lock()
+	m.child = child
+	m.exited = false
+	m.childDone = done
+	m.mu.Unlock()
+
+	go func() {
+		err := child.Wait()
+		log.Printf("engine exited: %v", err)
+		m.mu.Lock()
+		m.exited = true
+		m.mu.Unlock()
+		close(done)
+	}()
+
+	m.set(stateStarting, "Starting the AI engine (Python)…")
+	log.Printf("engine: %s %s --port %d", py, serverPy, bport)
+}
+
+// monitor watches a live engine: flips to ready when it answers, and to
+// error when it dies or misses the 90s startup deadline. It returns as
+// soon as the engine is gone (run() respawns it) or ctx is done.
+func (m *backendManager) monitor(ctx context.Context) {
+	deadline := time.Now().Add(90 * time.Second)
+	for ctx.Err() == nil {
+		m.mu.Lock()
+		exited := m.exited
+		done := m.childDone
+		m.mu.Unlock()
+		if done == nil {
+			return
+		}
+
+		if probeOK(m.currentBackend()) {
+			m.set(stateReady, "")
+			// Healthy: sit here until the engine dies or the app quits.
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				m.set(stateError, "The AI engine stopped unexpectedly - restarting it… (details in lito-desktop.log)")
+				return
+			}
+		}
+		if exited {
+			m.set(stateError, "The AI engine stopped unexpectedly - restarting it… (details in lito-desktop.log)")
+			return
+		}
+		if time.Now().After(deadline) {
+			m.set(stateError, "The AI engine did not start within 90s - restarting it… (details in lito-desktop.log)")
+			m.stopChild()
+			return
+		}
+		sleepCtx(ctx, 500*time.Millisecond)
+	}
+}
+
+// stopChild kills the engine process, if any.
+func (m *backendManager) stopChild() {
+	m.mu.Lock()
+	child := m.child
+	m.child = nil
+	m.mu.Unlock()
+	if child != nil && child.Process != nil {
+		_ = child.Process.Kill()
+	}
+}
+
+// probeOK does a quick /api/version request against the backend.
+func probeOK(backendURL string) bool {
+	if backendURL == "" {
+		return false
+	}
+	client := &http.Client{Timeout: 1 * time.Second}
+	resp, err := client.Get(backendURL + "/api/version")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
 
 func main() {
 	port := flag.Int("port", defaultPort, "port for the desktop UI")
@@ -57,79 +296,68 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	setupLogging()
+	defer closeLogFile()
+
 	backendURL := strings.TrimRight(*backend, "/")
+	if backendURL != "" {
+		if u, err := url.Parse(backendURL); err != nil || u.Scheme == "" || u.Host == "" {
+			fatalErr(fmt.Sprintf("bad backend URL %q", *backend))
+		}
+	}
 
-	// ------------------------------------------------------------------
-	// Launch the Python backend unless one was given.
-	// ------------------------------------------------------------------
-	if backendURL == "" {
-		py := *pythonBin
-		if py == "" {
-			py = findPython()
-		}
-		serverPy := findServerPy()
-		if py == "" || serverPy == "" {
-			fmt.Println("Lito desktop could not find Python or server.py.")
-			fmt.Println()
-			fmt.Println("Run it from a Lito source checkout with Python + numpy")
-			fmt.Println("installed, or start the backend yourself and point at it:")
-			fmt.Println()
-			fmt.Println("    python server.py")
-			fmt.Println("    lito-desktop -backend http://127.0.0.1:5486")
-			fmt.Println()
-			os.Exit(1)
-		}
+	mgr := &backendManager{
+		state:      stateStarting,
+		backendURL: backendURL,
+		pythonBin:  *pythonBin,
+		external:   backendURL != "",
+	}
 
-		bport, err := freePort()
-		if err != nil {
-			log.Fatalf("finding a free backend port: %v", err)
-		}
-		backendURL = fmt.Sprintf("http://127.0.0.1:%d", bport)
-
-		child := exec.Command(py, serverPy,
-			"--port", strconv.Itoa(bport), "--no-browser")
-		child.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-		child.Stdout = os.Stdout
-		child.Stderr = os.Stderr
-		if err := child.Start(); err != nil {
-			log.Fatalf("starting the backend: %v", err)
-		}
-		defer func() {
-			if child.Process != nil {
-				_ = child.Process.Kill()
+	// Proxy /api/* to wherever the engine currently is. The target is
+	// resolved per request: the engine URL is only known once it spawns,
+	// and it can change when it is restarted.
+	proxy := &httputil.ReverseProxy{
+		Director: func(r *http.Request) {
+			be := mgr.currentBackend()
+			if be == "" {
+				r.URL.Scheme = "http"
+				r.URL.Host = engineDownHost
+				return
 			}
-			_ = child.Wait()
-		}()
-		log.Printf("backend: %s %s --port %d", py, serverPy, bport)
-
-		if err := waitReady(ctx, backendURL, 90*time.Second); err != nil {
-			log.Fatalf("backend did not come up: %v", err)
-		}
-		log.Printf("backend ready at %s", backendURL)
-	}
-
-	target, err := url.Parse(backendURL)
-	if err != nil {
-		log.Fatalf("bad backend URL %q: %v", backendURL, err)
-	}
-
-	proxy := httputil.NewSingleHostReverseProxy(target)
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusBadGateway)
-		fmt.Fprintf(w, `{"error": "backend unavailable: %v"}`, e)
+			u, err := url.Parse(be)
+			if err != nil || u.Host == "" {
+				r.URL.Scheme = "http"
+				r.URL.Host = engineDownHost
+				return
+			}
+			r.URL.Scheme = u.Scheme
+			r.URL.Host = u.Host
+			r.Host = u.Host
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, e error) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprintf(w, `{"error": "backend unavailable: %v"}`, e)
+		},
 	}
 
 	// ------------------------------------------------------------------
-	// Serve the embedded UI + proxy the API.
+	// Serve the embedded UI + proxy the API. This happens BEFORE the
+	// engine is up: the app always launches, the UI just shows a banner
+	// until the engine is ready.
 	// ------------------------------------------------------------------
 	sub, err := fs.Sub(uiFS, "ui")
 	if err != nil {
-		log.Fatalf("embedded UI: %v", err)
+		fatalErr("embedded UI: " + err.Error())
 	}
 	files := http.FileServer(http.FS(sub))
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/desktop/status", func(w http.ResponseWriter, r *http.Request) {
+		state, msg := mgr.snapshot()
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		fmt.Fprintf(w, `{"state": %q, "message": %q}`, state, msg)
+	})
 	mux.Handle("/api/", proxy)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/")
@@ -145,7 +373,7 @@ func main() {
 
 	ln, addr, err := listen(*port)
 	if err != nil {
-		log.Fatalf("listening: %v", err)
+		fatalErr("could not listen on any port: " + err.Error())
 	}
 
 	srv := &http.Server{Handler: mux} // bound via ln
@@ -155,40 +383,62 @@ func main() {
 		go openBrowser(uiURL)
 	}
 
+	go mgr.run(ctx)
+
 	go func() {
 		<-ctx.Done()
 		log.Printf("shutting down…")
+		mgr.stopChild()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
 	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+		fatalErr(err.Error())
 	}
 	log.Printf("bye!")
 }
 
-// waitReady polls the backend's /api/version until it answers.
-func waitReady(ctx context.Context, backendURL string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 2 * time.Second}
-	var lastErr error
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+// setupLogging tees logs to stdout and lito-desktop.log next to the
+// executable (the Windows build has no console, so the file is the only
+// trace). Best effort: file problems are not fatal.
+var logFile io.WriteCloser
+
+func setupLogging() {
+	writers := []io.Writer{os.Stdout}
+	if dir := exeDir(); dir != "" {
+		if f, err := os.OpenFile(filepath.Join(dir, "lito-desktop.log"),
+			os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+			writers = append(writers, f)
+			logFile = f
 		}
-		resp, err := client.Get(backendURL + "/api/version")
-		if err == nil {
-			resp.Body.Close()
-			return nil
-		}
-		lastErr = err
-		time.Sleep(400 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout after %s, last error: %v", timeout, lastErr)
+	log.SetOutput(io.MultiWriter(writers...))
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
+}
+
+func closeLogFile() {
+	if logFile != nil {
+		_ = logFile.Close()
+	}
+}
+
+func exeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+
+// fatalErr reports an unrecoverable problem: log it, and on Windows (no
+// console) show a message box so double-clicking the app never dies in
+// silence.
+func fatalErr(msg string) {
+	log.Printf("FATAL: %s", msg)
+	alertUser("Lito desktop", msg)
+	os.Exit(1)
 }
 
 // listen binds 127.0.0.1:port, trying up to 10 consecutive ports if busy.
@@ -234,13 +484,11 @@ func findPython() string {
 // the working directory (covers running from a source checkout, from
 // desktop/, from dist/ inside the repo, or a bundled release zip).
 func findServerPy() string {
-	exe, err := os.Executable()
-	if err == nil {
-		exeDir := filepath.Dir(exe)
+	if dir := exeDir(); dir != "" {
 		candidates := []string{
-			filepath.Join(exeDir, "server.py"),
-			filepath.Join(exeDir, "..", "server.py"),
-			filepath.Join(exeDir, "..", "..", "server.py"),
+			filepath.Join(dir, "server.py"),
+			filepath.Join(dir, "..", "server.py"),
+			filepath.Join(dir, "..", "..", "server.py"),
 		}
 		for _, c := range candidates {
 			if fileExists(c) {

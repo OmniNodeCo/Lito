@@ -23,5 +23,8 @@ build/
 dist/
 *.spec
 
+# Go desktop app runtime log (written next to the binary)
+lito-desktop.log
+
 # Extension enable/disable state (runtime, per user)
 data/extensions.json

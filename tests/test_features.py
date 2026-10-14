@@ -984,21 +984,7 @@ def train_script_supports_classic_flag():
 
 
 @test
-def gui_module_imports_headless():
-    try:
-        import importlib
-        gui = importlib.import_module('gui')
-    except ImportError as e:
-        if 'tkinter' in str(e):
-            print('    (tkinter unavailable here - skipping GUI import check)')
-            return
-        raise
-    assert hasattr(gui, 'LitoApp') and hasattr(gui, 'main')
-    assert hasattr(gui, 'ModelBrowser') and hasattr(gui, 'TrainDialog')
-
-
-@test
-def build_config_defines_console_and_gui_targets():
+def build_config_defines_console_target():
     import build as build_mod
     cwd = os.getcwd()
     os.chdir(REPO_ROOT)
@@ -1007,21 +993,35 @@ def build_config_defines_console_and_gui_targets():
     finally:
         os.chdir(cwd)
     targets = {t['name']: t for t in config['targets']}
-    assert 'Lito' in targets and 'LitoGUI' in targets, targets
+    assert 'Lito' in targets, targets
     assert targets['Lito']['entry_point'] == 'main.py'
     assert targets['Lito']['console'] is True
-    assert targets['LitoGUI']['entry_point'] == 'gui.py'
-    assert targets['LitoGUI']['console'] is False
-    assert targets['LitoGUI'].get('requires_tkinter') is True
     # data dirs shipped with every executable
     assert 'extensions' in config['extra_data']
     assert 'data' in config['extra_data']
 
 
 @test
-def version_is_1_2_0():
-    assert __version__ == '1.2.0', __version__
-    assert format_version() == 'v1.2.0'
+def python_gui_fully_removed():
+    """The tkinter GUI is gone for good: the Go desktop app is the GUI,
+    Python is only the AI engine."""
+    assert not os.path.exists(os.path.join(REPO_ROOT, 'gui.py')), \
+        'gui.py should be gone (the Go desktop app is the GUI now)'
+    setup_py = open(os.path.join(REPO_ROOT, 'setup.py'),
+                    encoding='utf-8').read()
+    assert 'lito-gui' not in setup_py and "'gui'" not in setup_py
+    build_cfg = open(os.path.join(REPO_ROOT, 'build.yml'),
+                     encoding='utf-8').read()
+    assert 'LitoGUI' not in build_cfg and 'gui.py' not in build_cfg
+    ci_build = open(os.path.join(REPO_ROOT, '.github', 'workflows',
+                                 'build.yml'), encoding='utf-8').read()
+    assert 'LitoGUI' not in ci_build and 'python3-tk' not in ci_build
+
+
+@test
+def version_is_1_2_1():
+    assert __version__ == '1.2.1', __version__
+    assert format_version() == 'v1.2.1'
 
 
 # ----------------------------------------------------------------------

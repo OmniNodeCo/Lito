@@ -74,6 +74,7 @@ jobs:
 
   build-desktop:
     name: Build desktop app (Go)
+    needs: train-and-package        # the desktop bundles ship the trained model
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -83,6 +84,17 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+
+      - name: Download trained model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+
+      - name: Extract model
+        run: |
+          mkdir -p checkpoints
+          cd checkpoints
+          unzip -o ../model.zip
 
       - name: Vet and build (all platforms)
         run: |
@@ -94,11 +106,49 @@ jobs:
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-macOS-intel .
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-macOS-apple .
 
+      - name: Bundle the AI engine with each binary
+        run: |
+          cat > dist/README-DESKTOP.txt <<'EOF'
+          Lito - desktop app
+          ==================
+          The GUI is the Go app; the thinking happens in Python.
+
+          Run it:
+            Windows: double-click LitoDesktop-Windows.exe - a browser
+                     window opens. The app has no console; if anything
+                     goes wrong see lito-desktop.log next to the exe.
+            Linux:   ./LitoDesktop-Linux
+            macOS:   ./LitoDesktop-macOS-* (unsigned: right-click -> Open,
+                     or: xattr -d com.apple.quarantine LitoDesktop-macOS-*)
+
+          Requirements: Python 3.8+ with numpy on your PATH
+          (pip install numpy). The app starts the AI engine (server.py)
+          by itself and restarts it if it crashes. If the banner says the
+          engine is missing, install Python - no restart needed.
+
+          Without the Go app the same UI runs from Python alone:
+            python server.py            # http://127.0.0.1:5486
+          Terminal chat:  python main.py
+          Training:       python train.py --help
+          EOF
+          for name in Windows Linux macOS-intel macOS-apple; do
+            bin="dist/LitoDesktop-$name"
+            if [ "$name" = "Windows" ]; then bin="$bin.exe"; fi
+            test -f "$bin" || { echo "::error::missing $bin"; exit 1; }
+            rm -rf bundle/Lito && mkdir -p bundle/Lito
+            cp "$bin" bundle/Lito/
+            cp server.py main.py train.py dist/README-DESKTOP.txt bundle/Lito/
+            cp -r src extensions data checkpoints bundle/Lito/
+            rm -rf bundle/Lito/data/cache
+            (cd bundle && zip -qr "../dist/LitoDesktop-$name.zip" Lito)
+          done
+          ls -la dist
+
       - name: Upload desktop app artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lito-desktop
-          path: dist
+          path: dist/*.zip
           if-no-files-found: error
           retention-days: 90
 
@@ -111,15 +161,12 @@ jobs:
           - os: windows-latest
             artifact_name: Lito-Windows
             binary_name: Lito.exe
-            gui_binary_name: LitoGUI.exe
           - os: ubuntu-latest
             artifact_name: Lito-Linux
             binary_name: Lito
-            gui_binary_name: LitoGUI
           - os: macos-latest
             artifact_name: Lito-macOS
             binary_name: Lito
-            gui_binary_name: LitoGUI
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -149,10 +196,6 @@ jobs:
               z.extractall('checkpoints')
           "
 
-      - name: Install tkinter (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y python3-tk
-
       - name: Build executables with PyInstaller
         run: python build.py
 
@@ -161,14 +204,6 @@ jobs:
         run: |
           ls -la dist
           test -f "dist/${{ matrix.binary_name }}" || { echo "::error::missing dist/${{ matrix.binary_name }}"; exit 1; }
-          if [ -f "dist/${{ matrix.gui_binary_name }}" ]; then
-            echo "GUI executable OK: dist/${{ matrix.gui_binary_name }}"
-          elif [ "${{ runner.os }}" = "Windows" ]; then
-            echo "::error::missing GUI executable dist/${{ matrix.gui_binary_name }}"
-            exit 1
-          else
-            echo "::warning::GUI executable skipped on this runner (tkinter unavailable)"
-          fi
 
       - name: Upload Executable Artifacts
         uses: actions/upload-artifact@v4

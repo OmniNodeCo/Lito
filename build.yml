@@ -18,18 +18,15 @@ hidden_imports: [numpy, json, re, os, sys, time, argparse]
 
 # Build targets - one standalone executable each:
 #   name             output name (dist/<name>)
-#   entry_point      script to freeze
-#   console          true = terminal app, false = windowed GUI app
-#   requires_tkinter skip with a warning when tkinter is unavailable
-#                    (e.g. a runner without python3-tk)
+#   entry_point       script to freeze
+#   console          true = terminal app
+#
+# (The GUI used to live here as a frozen tkinter app. The GUI is the Go
+# desktop app now - see desktop/ - and Python is only the AI engine.)
 targets:
   - name: Lito
     entry_point: main.py
     console: true
-  - name: LitoGUI
-    entry_point: gui.py
-    console: false
-    requires_tkinter: true
 
 # Platform-specific settings
 # windows:

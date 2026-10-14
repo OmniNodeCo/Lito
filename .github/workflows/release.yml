@@ -8,7 +8,8 @@ name: Release Lito
 #      by this very tag push), wait for it to finish.
 #   2. Download that run's artifacts: best_model.npz + tokenizer.json
 #      (from the 'trained-model' artifact), the Windows/Linux/macOS
-#      executables and the Go desktop app binaries.
+#      executables and the Go desktop app bundles (each zip = the Go
+#      GUI binary + the Python AI engine + the trained model).
 #   3. Publish everything as a GitHub Release, tagged with the app version
 #      of the commit that was built (e.g. v1.2.0).
 #
@@ -249,23 +250,17 @@ jobs:
           cp downloaded/linux/Lito release/Lito-Linux
           cp downloaded/macos/Lito release/Lito-macOS
 
-          # GUI executables (LitoGUI). Windows is required; the others are
-          # optional because a runner without tkinter skips the GUI build.
-          cp downloaded/windows/LitoGUI.exe release/LitoGUI-Windows.exe
-          if [ -f downloaded/linux/LitoGUI ]; then cp downloaded/linux/LitoGUI release/LitoGUI-Linux; fi
-          if [ -f downloaded/macos/LitoGUI ]; then cp downloaded/macos/LitoGUI release/LitoGUI-macOS; fi
-
-          # Go desktop app binaries (already uniquely named per platform)
-          cp downloaded/desktop/LitoDesktop-Windows.exe release/LitoDesktop-Windows.exe
-          cp downloaded/desktop/LitoDesktop-Linux release/LitoDesktop-Linux
-          cp downloaded/desktop/LitoDesktop-macOS-intel release/LitoDesktop-macOS-intel
-          cp downloaded/desktop/LitoDesktop-macOS-apple release/LitoDesktop-macOS-apple
+          # Go desktop app bundles: each zip = binary + the Python AI
+          # engine (server.py, src/, data/, model) so it launches
+          # standalone (the old bare binaries are gone; the deprecated
+          # tkinter GUI was removed in v1.2.1).
+          cp downloaded/desktop/LitoDesktop-*.zip release/
 
           # The zip as-is, so `main.py --download` (which looks for model.zip) keeps working
           cp downloaded/model/model.zip release/model.zip
 
           # Every expected file must exist and not be empty
-          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe LitoGUI-Windows.exe Lito-Linux Lito-macOS LitoDesktop-Windows.exe LitoDesktop-Linux LitoDesktop-macOS-intel LitoDesktop-macOS-apple; do
+          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe Lito-Linux Lito-macOS LitoDesktop-Windows.zip LitoDesktop-Linux.zip LitoDesktop-macOS-intel.zip LitoDesktop-macOS-apple.zip; do
             if [ ! -s "release/$FILE" ]; then
               echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
               exit 1
@@ -309,17 +304,15 @@ jobs:
             echo "| \`tokenizer.json\` | Tokenizer / vocabulary for the model |"
             echo "| \`model.zip\` | The two files above bundled (what \`main.py --download\` fetches) |"
             echo "| \`Lito-Windows.exe\` | Standalone Windows executable (terminal chat) |"
-            echo "| \`LitoGUI-Windows.exe\` | Standalone Windows GUI app (chat, model downloads, training) |"
-            echo "| \`LitoGUI-Linux\` | Standalone Linux GUI app (published when the runner built it) |"
-            echo "| \`LitoGUI-macOS\` | Standalone macOS GUI app (published when the runner built it) |"
-            echo "| \`LitoDesktop-Windows.exe\` | Modern Go desktop app (needs a Lito source checkout with Python + numpy) |"
-            echo "| \`LitoDesktop-Linux\` | Modern Go desktop app for Linux (needs a source checkout) |"
-            echo "| \`LitoDesktop-macOS-intel\` / \`-apple\` | Modern Go desktop app for macOS (intel / Apple silicon, needs a source checkout) |"
             echo "| \`Lito-Linux\` | Standalone Linux executable |"
             echo "| \`Lito-macOS\` | Standalone macOS executable |"
+            echo "| \`LitoDesktop-Windows.zip\` | **Desktop app for Windows** - the Go GUI plus the Python AI engine and the trained model, ready to unzip and run (needs Python 3.8+ with numpy on the PATH) |"
+            echo "| \`LitoDesktop-Linux.zip\` | Desktop app for Linux (same bundle) |"
+            echo "| \`LitoDesktop-macOS-intel.zip\` | Desktop app for macOS, Intel Macs (same bundle) |"
+            echo "| \`LitoDesktop-macOS-apple.zip\` | Desktop app for macOS, Apple silicon (same bundle) |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
             echo
-            echo "The \`Lito\` and \`LitoGUI\` executables bundle everything they need. The \`LitoDesktop\` binaries embed the modern UI but use the local Python backend: run them from a Lito source checkout with Python + numpy installed (they launch \`python server.py\` automatically). To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
+            echo "The \`Lito\` executables and the \`LitoDesktop\` zips bundle everything except Python itself: the desktop app is the Go GUI, and the thinking happens in the bundled Python AI engine (\`server.py\` + \`src/\` + the trained model) which the app starts and watches automatically - install Python 3.8+ with numpy (\`pip install numpy\`) and double-click the binary in the unzipped \`Lito\` folder. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
           } > notes.md
 
       - name: Publish the release

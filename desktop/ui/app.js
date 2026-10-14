@@ -70,10 +70,16 @@ async function refreshStatus() {
   if (s.search !== undefined) $("search-toggle").checked = s.search;
 }
 
-function setOffline(off) {
+function setOffline(off, text, kind) {
+  const banner = $("offline-banner");
+  if (off) {
+    banner.textContent = text || "Backend connection lost — retrying…";
+    banner.className = kind || "err";
+  } else {
+    banner.className = "hidden";
+  }
   if (off === state.offline) return;
   state.offline = off;
-  $("offline-banner").classList.toggle("hidden", !off);
   if (!off) toast("Backend reconnected", "ok");
 }
 

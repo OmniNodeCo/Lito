@@ -41,6 +41,8 @@ body {
   background: var(--danger); color: #fff; text-align: center;
   padding: 6px 12px; font-size: 13px; font-weight: 600;
 }
+#offline-banner.warn { background: #b8860b; }
+#offline-banner.info { background: #3a6ea5; }
 
 /* ============================== Layout ============================== */
 

@@ -39,10 +39,6 @@ def load_build_config():
           - name: Lito
             entry_point: main.py
             console: true
-          - name: LitoGUI
-            entry_point: gui.py
-            console: false
-            requires_tkinter: true
     """
     config = {
         'name': 'Lito',
@@ -122,18 +118,8 @@ def _build_target(config: dict, target: dict):
     hidden_imports = target.get('hidden_imports',
                                 config.get('hidden_imports', []))
 
-    kind = 'console' if console else 'windowed GUI'
+    kind = 'console' if console else 'windowed'
     print(f"\nBuilding: {name} ({kind}) from {entry}")
-
-    if target.get('requires_tkinter'):
-        try:
-            import tkinter  # noqa: F401
-        except ImportError as e:
-            print(f"  SKIPPED: {name} needs tkinter, which is not available "
-                  f"here ({e}).")
-            print("  (On Debian/Ubuntu install it with: "
-                  "sudo apt-get install python3-tk)")
-            return 'skipped', None
 
     cmd = [
         sys.executable, '-m', 'PyInstaller',
@@ -217,15 +203,13 @@ def build():
     for exe in built:
         print(f"  Built:     {exe}")
     for name in skipped:
-        print(f"  Skipped:   {name} (tkinter unavailable)")
+        print(f"  Skipped:   {name}")
     for name in failed:
         print(f"  FAILED:    {name}")
     if built:
         print("  Output directory: dist/")
-        if sys.platform == 'win32':
-            print("  Run: dist\\Lito.exe (chat) and dist\\LitoGUI.exe (GUI app)")
-        else:
-            print("  Run: ./dist/Lito (chat) and ./dist/LitoGUI (GUI app)")
+        print("  Run: dist/Lito (terminal chat app)")
+        print("  GUI: build the Go desktop app instead (cd desktop && go build)")
     print("=" * 50)
 
     if failed or not built:
