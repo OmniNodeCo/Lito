@@ -1,31 +1,32 @@
 name: Release Lito
 
-# Publishes the artifacts of the latest green "Build Lito" run as a
-# versioned GitHub Release. Nothing is rebuilt here:
+# Publishes the artifacts of a green "Build Lito" run as a versioned
+# GitHub Release. Nothing is rebuilt here:
 #
-#   1. Find the most recent successful run of build.yml on the chosen branch.
+#   1. Find the green 'Build Lito' run of the commit being released.
+#      If a build of that commit is still running (e.g. the one triggered
+#      by this very tag push), wait for it to finish.
 #   2. Download that run's artifacts: best_model.npz + tokenizer.json
-#      (from the 'trained-model' artifact) and the Windows/Linux/macOS
-#      executables.
-#   3. Publish everything as a GitHub Release, tagged with the app version of
-#      the commit that was built (e.g. v1.1.0).
+#      (from the 'trained-model' artifact), the Windows/Linux/macOS
+#      executables and the Go desktop app binaries.
+#   3. Publish everything as a GitHub Release, tagged with the app version
+#      of the commit that was built (e.g. v1.2.0).
 #
 # Triggers:
-#   - Manually: Actions -> Release Lito -> Run workflow
-#   - Pushing a v* tag: publishes under that tag
+#   - Manually: Actions -> Release Lito -> Run workflow (publishes the
+#     build of the branch head commit; build it first if there is none)
+#   - Pushing a v* tag: publishes under that tag, waiting for the
+#     tag-triggered build to complete
 #
-# Build artifacts are only kept for 30-90 days; if the latest green run is
-# older than that, this workflow fails and asks you to re-run the build first.
+# Build artifacts are only kept for 30-90 days; if the green run is
+# older than that, this workflow fails and asks you to re-run the build
+# first.
 
 on:
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch whose latest green build to publish (empty = default branch)'
-        required: false
-        default: ''
       tag:
-        description: 'Release tag (empty = app version of the built commit, e.g. v1.1.0)'
+        description: 'Release tag (empty = app version of the built commit, e.g. v1.2.0)'
         required: false
         default: ''
       prerelease:
@@ -49,30 +50,71 @@ jobs:
     name: Publish latest green build
     runs-on: ubuntu-latest
     steps:
-      - name: Find the latest green Build Lito run
+      - name: Find the green Build Lito run for this commit
         id: find-run
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ inputs.branch || github.event.repository.default_branch || 'main' }}
+          TARGET_SHA: ${{ github.sha }}
         shell: bash
         run: |
-          echo "Looking for the latest green 'Build Lito' run on branch '$BRANCH'..."
-          GREEN="$(gh run list --repo "$REPO" --workflow build.yml --branch "$BRANCH" --limit 50 \
-            --json databaseId,headSha,number,createdAt,url,conclusion,status \
-            | jq '[.[] | select(.status == "completed" and .conclusion == "success")]')"
+          set -euo pipefail
+          echo "Looking for a green 'Build Lito' run of commit $TARGET_SHA..."
 
-          if [ "$(jq length <<<"$GREEN")" -eq 0 ]; then
-            echo "::error::No successful 'Build Lito' run found on branch '$BRANCH'. Trigger that workflow first, then run this one."
+          fetch_runs() {
+            gh run list --repo "$REPO" --workflow build.yml --limit 100 \
+              --json databaseId,headSha,number,createdAt,url,conclusion,status \
+              | jq --arg sha "$TARGET_SHA" '[.[] | select(.headSha == $sha)]'
+          }
+          pick_success() {
+            jq 'map(select(.status == "completed" and .conclusion == "success"))
+                | sort_by(.createdAt) | reverse | .[0] // empty'
+          }
+
+          # A just-pushed tag can take a moment to register its build run.
+          MATCHED=""
+          for _ in $(seq 1 10); do
+            MATCHED="$(fetch_runs)"
+            if [ "$(jq length <<<"$MATCHED")" -gt 0 ]; then break; fi
+            echo "  (no Build run for this commit yet - retrying in 30s)"
+            sleep 30
+          done
+          if [ "$(jq length <<<"$MATCHED")" -eq 0 ]; then
+            echo "::error::No 'Build Lito' run exists for commit $TARGET_SHA. Trigger 'Build Lito' on that commit first (Actions -> Build Lito -> Run workflow), then run this release workflow again."
             exit 1
           fi
 
-          RUN_ID="$(jq '.[0].databaseId' <<<"$GREEN")"
-          HEAD_SHA="$(jq -r '.[0].headSha' <<<"$GREEN")"
-          RUN_NUMBER="$(jq '.[0].number' <<<"$GREEN")"
-          CREATED_AT="$(jq -r '.[0].createdAt' <<<"$GREEN")"
-          RUN_URL="$(jq -r '.[0].url' <<<"$GREEN")"
-          COMMIT_SUBJECT="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message' | head -n1)"
+          GREEN="$(pick_success <<<"$MATCHED")"
+
+          # If there is no green run yet, wait for an in-progress build of
+          # the same commit (e.g. the one triggered by this very tag push).
+          if [ -z "$GREEN" ]; then
+            echo "  No green run of this commit yet - waiting for the running build..."
+            for _ in $(seq 1 90); do    # up to 45 minutes
+              sleep 30
+              MATCHED="$(fetch_runs)"
+              GREEN="$(pick_success <<<"$MATCHED")"
+              if [ -n "$GREEN" ]; then break; fi
+              if ! jq -e 'map(select(.status != "completed")) | length > 0' <<<"$MATCHED" >/dev/null; then
+                echo "::error::The 'Build Lito' run(s) of commit $TARGET_SHA finished without a success."
+                exit 1
+              fi
+              echo "  still building... ($(date -u +%H:%M:%S) UTC)"
+            done
+          fi
+
+          if [ -z "$GREEN" ]; then
+            echo "::error::Timed out waiting for a green 'Build Lito' run of commit $TARGET_SHA."
+            exit 1
+          fi
+
+          RUN_ID="$(jq '.databaseId' <<<"$GREEN")"
+          HEAD_SHA="$(jq -r '.headSha' <<<"$GREEN")"
+          RUN_NUMBER="$(jq '.number' <<<"$GREEN")"
+          CREATED_AT="$(jq -r '.createdAt' <<<"$GREEN")"
+          RUN_URL="$(jq -r '.url' <<<"$GREEN")"
+          MSG="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message')"
+          COMMIT_SUBJECT="$(head -n1 <<<"$MSG")"
 
           echo "Found green run #$RUN_NUMBER (commit $HEAD_SHA): $COMMIT_SUBJECT"
           {
