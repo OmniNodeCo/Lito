@@ -72,6 +72,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  build-desktop:
+    name: Build desktop app (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Vet and build (all platforms)
+        run: |
+          cd desktop
+          go vet ./...
+          mkdir -p ../dist
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H=windowsgui" -o ../dist/LitoDesktop-Windows.exe .
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-Linux .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-macOS-intel .
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-macOS-apple .
+
+      - name: Upload desktop app artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lito-desktop
+          path: dist
+          if-no-files-found: error
+          retention-days: 90
+
   build-executables:
     needs: train-and-package
     strategy:

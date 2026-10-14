@@ -135,7 +135,7 @@ jobs:
           LISTED="$(jq -r '.[].name' <<<"$ARTIFACTS")"
 
           MISSING=""
-          for EXPECTED in trained-model Lito-Windows Lito-Linux Lito-macOS; do
+          for EXPECTED in trained-model Lito-Windows Lito-Linux Lito-macOS lito-desktop; do
             if ! grep -qx "$EXPECTED" <<<"$LISTED"; then
               MISSING="$MISSING $EXPECTED"
             fi
@@ -185,6 +185,14 @@ jobs:
           github-token: ${{ github.token }}
           path: downloaded/macos
 
+      - name: Download desktop app artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: lito-desktop
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/desktop
+
       - name: Collect and verify the release files
         shell: bash
         run: |
@@ -204,11 +212,17 @@ jobs:
           if [ -f downloaded/linux/LitoGUI ]; then cp downloaded/linux/LitoGUI release/LitoGUI-Linux; fi
           if [ -f downloaded/macos/LitoGUI ]; then cp downloaded/macos/LitoGUI release/LitoGUI-macOS; fi
 
+          # Go desktop app binaries (already uniquely named per platform)
+          cp downloaded/desktop/LitoDesktop-Windows.exe release/LitoDesktop-Windows.exe
+          cp downloaded/desktop/LitoDesktop-Linux release/LitoDesktop-Linux
+          cp downloaded/desktop/LitoDesktop-macOS-intel release/LitoDesktop-macOS-intel
+          cp downloaded/desktop/LitoDesktop-macOS-apple release/LitoDesktop-macOS-apple
+
           # The zip as-is, so `main.py --download` (which looks for model.zip) keeps working
           cp downloaded/model/model.zip release/model.zip
 
           # Every expected file must exist and not be empty
-          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe LitoGUI-Windows.exe Lito-Linux Lito-macOS; do
+          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe LitoGUI-Windows.exe Lito-Linux Lito-macOS LitoDesktop-Windows.exe LitoDesktop-Linux LitoDesktop-macOS-intel LitoDesktop-macOS-apple; do
             if [ ! -s "release/$FILE" ]; then
               echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
               exit 1
@@ -255,11 +269,14 @@ jobs:
             echo "| \`LitoGUI-Windows.exe\` | Standalone Windows GUI app (chat, model downloads, training) |"
             echo "| \`LitoGUI-Linux\` | Standalone Linux GUI app (published when the runner built it) |"
             echo "| \`LitoGUI-macOS\` | Standalone macOS GUI app (published when the runner built it) |"
+            echo "| \`LitoDesktop-Windows.exe\` | Modern Go desktop app (needs a Lito source checkout with Python + numpy) |"
+            echo "| \`LitoDesktop-Linux\` | Modern Go desktop app for Linux (needs a source checkout) |"
+            echo "| \`LitoDesktop-macOS-intel\` / \`-apple\` | Modern Go desktop app for macOS (intel / Apple silicon, needs a source checkout) |"
             echo "| \`Lito-Linux\` | Standalone Linux executable |"
             echo "| \`Lito-macOS\` | Standalone macOS executable |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
             echo
-            echo "The executables bundle everything they need. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
+            echo "The \`Lito\` and \`LitoGUI\` executables bundle everything they need. The \`LitoDesktop\` binaries embed the modern UI but use the local Python backend: run them from a Lito source checkout with Python + numpy installed (they launch \`python server.py\` automatically). To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
           } > notes.md
 
       - name: Publish the release

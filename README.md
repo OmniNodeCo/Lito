@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.1.0** — see [Versions](#versions).
+**Current version: v1.2.0** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -16,11 +16,15 @@ English dictionary, and live web search.
 
 ## What it can do
 
-- **Desktop GUI** — an Ollama-style app (`python gui.py`, tkinter only, no
-  extra dependencies): model sidebar, chat pane, and a **version database**
-  browser that lists every model published on GitHub Releases and downloads
-  them with a progress bar. Train new models in the background without
-  leaving the chat
+- **Desktop GUI** — two of them:
+  - **`LitoDesktop`** (new in v1.2.0): a modern **Go** app, Ollama-style — it
+    launches the local Python backend (`server.py`) and serves a sleek web UI
+    (dark sidebar, chat bubbles, version-database browser with progress
+    downloads, background training with a live log, extension toggles).
+    Pure Go standard library, no external modules. `python server.py` alone
+    serves the same UI in your browser, no Go needed
+  - **`LitoGUI`**: a tkinter app (`gui.py`, no extra dependencies) with the
+    same features in a native window
 - **Optional extensions** — small plugins in `extensions/` add instant
   skills (calculator, dice, date & time ship built-in). Toggle them per
   session with `/extensions on|off <name>` or in the GUI; the state persists
@@ -50,7 +54,9 @@ English dictionary, and live web search.
 
 ```bash
 pip install -r requirements.txt   # just numpy
-python gui.py                     # desktop app (chat + models + training)
+python server.py                  # modern web UI in your browser
+go run ./desktop                  # …or the Go desktop app wrapping it (needs Go)
+python gui.py                     # …or the tkinter desktop app
 python main.py                    # terminal chat (trains or downloads a model if none found)
 ```
 
@@ -132,7 +138,11 @@ python main.py --chat-only
 ## CLI options
 
 ```
-python gui.py                       # desktop app (Ollama-style)
+python server.py                    # API server + web UI (port 5486)
+python server.py --port 8000 --no-search --no-browser
+go run ./desktop                    # Go desktop app (launches server.py)
+desktop/lito-desktop --backend http://127.0.0.1:5486   # reuse a running backend
+python gui.py                       # tkinter desktop app
 python gui.py --dir models/v1.0.3   # start with a specific model
 python gui.py --no-search           # start with web search off
 python main.py --train              # train the model locally, then chat
@@ -172,22 +182,49 @@ user input
 combined answer (all clause answers joined)
 ```
 
-### Desktop GUI (`gui.py`)
+### Desktop GUI
 
-An Ollama-style app built on tkinter (bundled with Python — nothing extra
-to install):
+Three ways to run the same app:
+
+**1. Go desktop app — `desktop/` (new in v1.2.0).** Ollama-style: a small Go
+binary launches the Python backend and serves the modern web UI:
+
+```bash
+cd desktop && go build      # pure stdlib, no modules to download
+./lito-desktop              # opens the UI in your browser automatically
+```
+
+Flags: `-port N`, `-backend URL` (talk to an already-running
+`python server.py`), `-python PATH`, `-no-browser`.
+
+**2. API server + browser — `server.py`.** Same UI, no Go needed:
+
+```bash
+python server.py            # http://127.0.0.1:5486
+```
+
+`server.py` is the local API (the "ollama serve" of Lito): `/api/chat`,
+`/api/models`, `/api/releases` (version database), `/api/download`,
+`/api/extensions`, `/api/train` and friends — all localhost-only, standard
+library only.
+
+**3. Tkinter app — `gui.py`.** A native window with the same features, no
+browser involved.
+
+All of them share one feature set (built on the same `ModelManager` and
+`ExtensionManager`):
 
 - **Left sidebar** — the model list (your trained `checkpoints/` plus
   everything downloaded), *Download…* opens the **version database**
   browser listing all GitHub Releases with sizes and dates; ⟳ refreshes,
   🗑 deletes, ⚙ *Train…* opens the training dialog
 - **Chat pane** — same brain as the terminal chat, including slash
-  commands; Enter sends, Shift+Enter inserts a newline
-- **Extensions & settings** — per-extension checkboxes and a web-search
+  commands
+- **Extensions & settings** — per-extension toggles and a web-search
   toggle that take effect immediately
-- **Training dialog** — pick hyperparameters (or the classic
-  architecture) and watch `train.py` stream its output live; the finished
-  model is loaded automatically
+- **Training** — pick hyperparameters (or the classic architecture) and
+  watch `train.py` stream its output live; the finished model is loaded
+  automatically
 
 Model loading, downloads and training all run on background threads, so
 the UI never freezes. `ModelManager` (`src/model_manager.py`) is the
@@ -288,10 +325,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.1.0**). Shown
+- **Application version** — the software itself (currently **v1.2.0**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.1.0 → v1.1.1 → ...).
+  patch number with every word or term the AI learns (v1.2.0 → v1.2.1 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -322,13 +359,13 @@ layout.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 64 tests, no network required
+python tests/test_features.py     # 67 tests, no network required
 ```
 
 Covers the dictionary, NLP pipeline, search parsing, brain routing, the
 extension system (including numerical-gradient checks of the new RoPE /
-RMSNorm / tied-weight backward passes), the model manager, the GUI module
-and the build configuration.
+RMSNorm / tied-weight backward passes), the model manager, the API server,
+the GUI module and the build configuration.
 
 ## Releases
 
@@ -338,8 +375,9 @@ Two GitHub Actions workflows handle packaging and publishing:
   the tests, trains a fresh model, packages `best_model.npz` +
   `tokenizer.json`, builds standalone Windows/Linux/macOS executables — a
   terminal chat app (`Lito`) *and* a GUI app (`LitoGUI`, built from
-  `gui.py` with tkinter bundled) — and keeps the `latest-model` release up
-  to date.
+  `gui.py` with tkinter bundled) — cross-compiles the **Go desktop app**
+  (`LitoDesktop` for Windows, Linux and macOS, both Intel and Apple
+  silicon), and keeps the `latest-model` release up to date.
 - **Release** (`.github/workflows/release.yml`) — publishes a versioned
   release from the latest green build run. It finds the most recent
   successful build, downloads its model, tokenizer and executables, and
@@ -356,7 +394,9 @@ right away.
 
 ```
 main.py               chat entry point
-gui.py                desktop app entry point (Ollama-style)
+server.py             local API server + web UI backend (Ollama-style)
+desktop/              Go desktop app: main.go, go.mod, ui/ (web UI)
+gui.py                tkinter desktop app entry point
 train.py              training entry point
 src/                  all source (model, NLP, dictionary, search, chat,
                       extensions loader, model manager / version database)
@@ -366,7 +406,7 @@ data/                 offline dictionary data (see data/README.md)
 tools/                dictionary build scripts
 tests/                feature tests
 build.py, build.yml   PyInstaller packaging config
-.github/workflows/    CI: build.yml (train + package), release.yml (publish)
+.github/workflows/    CI: build.yml (train + package + Go desktop), release.yml (publish)
 ```
 
 ## License notes

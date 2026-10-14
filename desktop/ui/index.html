@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lito</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%86%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="offline-banner" class="hidden">Backend connection lost — retrying…</div>
+
+  <div id="app">
+    <!-- ======================= Sidebar ======================= -->
+    <aside id="sidebar">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-name">Lito</span>
+        <span class="brand-ver" id="brand-ver"></span>
+      </div>
+
+      <div class="section-label">Models</div>
+      <div id="model-list" class="model-list">
+        <div class="skeleton-row"></div>
+        <div class="skeleton-row"></div>
+      </div>
+      <div class="sidebar-actions">
+        <button id="btn-download" class="btn btn-primary btn-block" title="Browse the version database (GitHub Releases)">
+          ⬇&nbsp; Download
+        </button>
+        <div class="row">
+          <button id="btn-refresh" class="btn btn-ghost" title="Refresh models">⟳ Refresh</button>
+          <button id="btn-train" class="btn btn-ghost" title="Train a new model">⚙ Train</button>
+        </div>
+      </div>
+
+      <div class="section-label">Extensions</div>
+      <div id="ext-list" class="ext-list"></div>
+
+      <div class="section-label">Settings</div>
+      <div class="switch-row">
+        <span>Web search</span>
+        <label class="switch">
+          <input type="checkbox" id="search-toggle">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="sidebar-foot">
+        <span id="foot-status">starting…</span>
+      </div>
+    </aside>
+
+    <!-- ======================= Main pane ======================= -->
+    <main id="main">
+      <header id="topbar">
+        <div id="model-chip" class="chip">
+          <span class="dot" id="model-dot"></span>
+          <span id="model-chip-text">loading…</span>
+        </div>
+        <div class="topbar-right">
+          <button id="btn-new-chat" class="btn btn-ghost btn-sm" title="Clear the conversation">＋ New chat</button>
+        </div>
+      </header>
+
+      <div id="chat-wrap">
+        <div id="chat">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-logo">◆</div>
+            <h1>Lito</h1>
+            <p>An AI built entirely from scratch — ask anything, or try
+              <code>what is 2 + 2 * 10</code>, <code>roll 2d6</code>,
+              <code>what time is it?</code></p>
+          </div>
+        </div>
+      </div>
+
+      <div id="composer">
+        <div class="composer-inner">
+          <textarea id="input" rows="1" placeholder="Message Lito…"
+            autocomplete="off"></textarea>
+          <button id="send" class="send-btn" title="Send" disabled>➤</button>
+        </div>
+        <div class="composer-hint">Enter to send · Shift+Enter for a new line · /help for commands</div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ======================= Download modal ======================= -->
+  <div id="modal-download" class="modal-backdrop hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>Download models</h2>
+        <button class="modal-close" data-close="modal-download">✕</button>
+      </div>
+      <p class="modal-sub">Version database — every model published on GitHub Releases</p>
+      <div id="release-list" class="release-list">
+        <div class="skeleton-row"></div><div class="skeleton-row"></div>
+      </div>
+      <div id="dl-progress" class="dl-progress hidden">
+        <div class="dl-progress-label"><span id="dl-tag"></span><span id="dl-pct"></span></div>
+        <div class="bar"><div id="dl-bar" class="bar-fill"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================= Train modal ======================= -->
+  <div id="modal-train" class="modal-backdrop hidden">
+    <div class="modal modal-wide">
+      <div class="modal-head">
+        <h2>Train a new model</h2>
+        <button class="modal-close" data-close="modal-train">✕</button>
+      </div>
+      <div class="train-form" id="train-form">
+        <label>epochs<input data-k="epochs" value="30" type="number" min="1"></label>
+        <label>d_model<input data-k="d_model" value="128" type="number" min="8"></label>
+        <label>n_layers<input data-k="n_layers" value="4" type="number" min="1"></label>
+        <label>n_heads<input data-k="n_heads" value="4" type="number" min="1"></label>
+        <label>d_ff<input data-k="d_ff" value="512" type="number" min="8"></label>
+        <label>vocab_size<input data-k="vocab_size" value="2048" type="number" min="32"></label>
+        <label>batch_size<input data-k="batch_size" value="4" type="number" min="1"></label>
+        <label>seq_len<input data-k="seq_len" value="64" type="number" min="8"></label>
+        <label>lr<input data-k="lr" value="0.0003" type="number" step="any"></label>
+        <label class="check"><input data-k="classic" type="checkbox"> classic architecture (v1.0)</label>
+        <button id="btn-start-train" class="btn btn-primary">▶ Start training</button>
+      </div>
+      <p class="modal-sub">Runs <code>python train.py</code> in the background — the finished model lands in <code>checkpoints/</code> and loads automatically.</p>
+      <pre id="train-log" class="train-log hidden"></pre>
+    </div>
+  </div>
+
+  <!-- ======================= Confirm modal ======================= -->
+  <div id="modal-confirm" class="modal-backdrop hidden">
+    <div class="modal modal-sm">
+      <div class="modal-head"><h2 id="confirm-title">Are you sure?</h2></div>
+      <p class="modal-sub" id="confirm-text"></p>
+      <div class="row end">
+        <button class="btn btn-ghost" id="confirm-cancel">Cancel</button>
+        <button class="btn btn-danger" id="confirm-ok">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast-root"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

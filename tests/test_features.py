@@ -1019,9 +1019,136 @@ def build_config_defines_console_and_gui_targets():
 
 
 @test
-def version_is_1_1_0():
-    assert __version__ == '1.1.0', __version__
-    assert format_version() == 'v1.1.0'
+def version_is_1_2_0():
+    assert __version__ == '1.2.0', __version__
+    assert format_version() == 'v1.2.0'
+
+
+# ----------------------------------------------------------------------
+# API server + Go desktop app (v1.2.0)
+# ----------------------------------------------------------------------
+
+@test
+def server_api_endpoints():
+    import http.client
+    import threading as threading_mod
+    import time as time_mod
+    from http.server import ThreadingHTTPServer
+    from server import LitoServer, make_handler
+
+    with tempfile.TemporaryDirectory() as tmp:
+        state = LitoServer(model_dir=os.path.join(tmp, 'no-model'),
+                           search_enabled=False)
+        # offline-friendly version database
+        state.mm._fetch_json = lambda url, headers=None: [{
+            'tag_name': 'v9.9.9', 'name': 'Lito v9.9.9', 'draft': False,
+            'published_at': '2026-10-14T00:00:00Z', 'body': 'notes',
+            'assets': [{'name': 'model.zip', 'size': 10,
+                        'browser_download_url': 'https://example.com/m.zip'}]}]
+        state.start_background_load()
+        httpd = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(state))
+        httpd.daemon_threads = True
+        port = httpd.server_address[1]
+        threading_mod.Thread(target=httpd.serve_forever, daemon=True).start()
+
+        def req(method, path, body=None):
+            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+            conn.request(method, path,
+                         json.dumps(body) if body is not None else None,
+                         {'Content-Type': 'application/json'})
+            resp = conn.getresponse()
+            data = json.loads(resp.read().decode('utf-8'))
+            conn.close()
+            return resp.status, data
+
+        try:
+            # wait for the background brain load
+            for _ in range(60):
+                _, v = req('GET', '/api/version')
+                if not v.get('loading'):
+                    break
+                time_mod.sleep(0.2)
+            assert v['name'] == 'Lito' and v['version'].startswith('v'), v
+
+            # chat through the API (extension answer)
+            _, r = req('POST', '/api/chat', {'message': 'what is 2 + 2?'})
+            assert '= 4' in r['response'], r
+            # slash command routing
+            _, r = req('POST', '/api/chat', {'message': '/calc (2+3)*4'})
+            assert '= 20' in r['response'], r
+            # toggling an extension over the API takes effect immediately
+            _, r = req('POST', '/api/extensions',
+                       {'name': 'calculator', 'enabled': False})
+            assert r.get('ok'), r
+            _, r = req('POST', '/api/chat', {'message': 'what is 2 + 2?'})
+            assert '= 4' not in r['response'], r
+            req('POST', '/api/extensions',
+                {'name': 'calculator', 'enabled': True})
+            # version database (mocked)
+            _, r = req('GET', '/api/releases')
+            assert r['releases'][0]['tag'] == 'v9.9.9', r
+            assert r['releases'][0]['size_text'] == '10 B', r
+            # models + error paths
+            _, r = req('GET', '/api/models')
+            assert isinstance(r['models'], list)
+            _, r = req('POST', '/api/models/use', {'name': 'zzz'})
+            assert 'error' in r, r
+            _, r = req('POST', '/api/models/delete', {'name': 'zzz'})
+            assert 'error' in r, r
+            _, r = req('POST', '/api/search', {'enabled': False})
+            assert r['search'] is False, r
+            _, r = req('POST', '/api/reset')
+            assert r.get('ok'), r
+            _, r = req('GET', '/api/train/status?since=0')
+            assert r['running'] is False and r['lines'] == [], r
+            # the static UI is served
+            conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
+            conn.request('GET', '/')
+            resp = conn.getresponse()
+            body = resp.read().decode('utf-8')
+            ctype = resp.getheader('Content-Type', '')
+            conn.close()
+            assert resp.status == 200 and 'Lito' in body and 'app.js' in body
+            assert 'text/html' in ctype
+        finally:
+            httpd.shutdown()
+
+
+@test
+def desktop_app_sources_present():
+    ui = os.path.join(REPO_ROOT, 'desktop', 'ui')
+    for fname in ('index.html', 'app.js', 'style.css'):
+        assert os.path.isfile(os.path.join(ui, fname)), fname
+    html = open(os.path.join(ui, 'index.html'), encoding='utf-8').read()
+    assert 'app.js' in html and 'style.css' in html
+    main_go = open(os.path.join(REPO_ROOT, 'desktop', 'main.go'),
+                   encoding='utf-8').read()
+    assert '//go:embed ui' in main_go
+    assert 'server.py' in main_go            # launches the Python backend
+    assert '5486' in main_go                 # default UI port
+    gomod = open(os.path.join(REPO_ROOT, 'desktop', 'go.mod'),
+                 encoding='utf-8').read()
+    assert gomod.startswith('module'), gomod
+
+
+@test
+def desktop_go_app_builds():
+    import shutil
+    import subprocess as sp_mod
+    go = shutil.which('go')
+    if not go:
+        print('    (no Go toolchain here - CI builds it in build-desktop)')
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        out = os.path.join(tmp, 'lito-desktop-test')
+        env = dict(os.environ, GOPROXY='off', GOFLAGS='-mod=mod')
+        if 'GOROOT' not in env:
+            pass  # go on PATH already knows its GOROOT
+        r = sp_mod.run([go, 'build', '-trimpath', '-o', out, '.'],
+                       cwd=os.path.join(REPO_ROOT, 'desktop'),
+                       capture_output=True, text=True, timeout=900, env=env)
+        assert r.returncode == 0, r.stderr
+        assert os.path.isfile(out)
 
 
 # ----------------------------------------------------------------------

@@ -40,6 +40,10 @@ targets:
 # strip: true
 # upx: true
 
+# Go desktop app (desktop/) - NOT built by PyInstaller. CI cross-compiles
+# it in the build-desktop job (see .github/workflows/build.yml); locally:
+#   cd desktop && go build
+#
 # Build output directory
 dist_dir: dist
 build_dir: build_temp

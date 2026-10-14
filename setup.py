@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='lito',
-    version='1.1.0',
+    version='1.2.0',
     description='An AI built entirely from scratch - no pretrained models',
     author='Lito',
     packages=find_packages(),
