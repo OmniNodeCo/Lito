@@ -478,6 +478,9 @@ def main():
         description=f'{APP_NAME} API server (local backend for the desktop app)')
     parser.add_argument('--port', type=int, default=5486,
                         help='port to listen on (default 5486)')
+    parser.add_argument('--host', default='127.0.0.1',
+                        help='interface to bind (default 127.0.0.1; use '
+                             '0.0.0.0 only on machines you trust)')
     parser.add_argument('--dir', default=None,
                         help='model directory to load (default: checkpoints)')
     parser.add_argument('--no-search', action='store_true',
@@ -489,11 +492,11 @@ def main():
     state = LitoServer(model_dir=args.dir,
                        search_enabled=not args.no_search)
     handler = make_handler(state)
-    httpd = ThreadingHTTPServer(('127.0.0.1', args.port), handler)
+    httpd = ThreadingHTTPServer((args.host, args.port), handler)
     httpd.daemon_threads = True
     url = f'http://127.0.0.1:{httpd.server_address[1]}'
     print(f'{APP_NAME} {format_version(__version__)} API server')
-    print(f'  listening on {url}')
+    print(f'  listening on {args.host}:{httpd.server_address[1]}')
     print(f'  model dir: {os.path.basename(state.startup_dir)}')
     print(f'  press Ctrl+C to stop')
     if not args.no_browser:
