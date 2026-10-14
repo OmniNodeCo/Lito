@@ -1019,9 +1019,9 @@ def python_gui_fully_removed():
 
 
 @test
-def version_is_1_2_1():
-    assert __version__ == '1.2.1', __version__
-    assert format_version() == 'v1.2.1'
+def version_is_1_2_2():
+    assert __version__ == '1.2.2', __version__
+    assert format_version() == 'v1.2.2'
 
 
 # ----------------------------------------------------------------------
@@ -1126,6 +1126,24 @@ def desktop_app_sources_present():
     assert '//go:embed ui' in main_go
     assert 'server.py' in main_go            # launches the Python backend
     assert '5486' in main_go                 # default UI port
+    # The app must launch even without the engine and explain itself:
+    # status endpoint, log file, and a Windows message box for fatals.
+    assert '/api/desktop/status' in main_go
+    assert 'lito-desktop.log' in main_go
+    assert 'stateMissing' in main_go
+    assert os.path.isfile(os.path.join(REPO_ROOT, 'desktop',
+                                       'alert_windows.go'))
+    # No terminal windows on Windows: children run with CREATE_NO_WINDOW,
+    # and the engine only starts after a hidden `python -c "import numpy"`
+    # pre-flight (which also skips the Windows Store python stub).
+    assert os.path.isfile(os.path.join(REPO_ROOT, 'desktop',
+                                       'exec_windows.go'))
+    assert os.path.isfile(os.path.join(REPO_ROOT, 'desktop',
+                                       'exec_other.go'))
+    assert 'hideWindow' in main_go
+    assert 'import numpy' in main_go
+    app_js = open(os.path.join(ui, 'app.js'), encoding='utf-8').read()
+    assert '/api/desktop/status' in app_js
     gomod = open(os.path.join(REPO_ROOT, 'desktop', 'go.mod'),
                  encoding='utf-8').read()
     assert gomod.startswith('module'), gomod

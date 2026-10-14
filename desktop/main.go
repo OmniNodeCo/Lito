@@ -118,11 +118,14 @@ func (m *backendManager) run(ctx context.Context) {
 	for ctx.Err() == nil {
 		if !m.hasLiveChild() {
 			m.spawn(ctx)
-			if !m.hasLiveChild() {
-				continue // engine missing: spawn() already waited, retry
-			}
 		}
 		m.monitor(ctx)
+		// Whatever happened - engine missing, dead on arrival, or died
+		// after running fine - pause before the next attempt. This is
+		// the single throttle point: a broken engine can never respawn
+		// faster than once every 5 seconds (spawn()'s failure paths do
+		// not sleep on their own).
+		sleepCtx(ctx, 5*time.Second)
 	}
 	m.stopChild()
 }
@@ -147,35 +150,58 @@ func (m *backendManager) runExternal(ctx context.Context) {
 }
 
 // spawn looks for python + server.py and starts the engine. When either
-// is missing it records a helpful message, waits a moment, and returns
-// without a child (the caller tries again).
+// is missing (or Python can't import numpy) it records a helpful message
+// and returns without a child; run() throttles the retries.
 func (m *backendManager) spawn(ctx context.Context) {
 	m.stopChild()
 
-	py := m.pythonBin
-	if py == "" {
-		py = findPython()
+	// Candidate interpreters: the -python flag, or everything on PATH.
+	var candidates []string
+	if m.pythonBin != "" {
+		candidates = []string{m.pythonBin}
+	} else {
+		candidates = pythonCandidates()
 	}
 	serverPy := findServerPy()
-	if py == "" || serverPy == "" {
-		var msg string
-		switch {
-		case py == "" && serverPy == "":
-			msg = "Neither Python nor the AI engine (server.py) was found. Install Python 3 with numpy (python.org) and keep this app inside its Lito folder - Lito keeps looking for both…"
-		case py == "":
-			msg = "Python was not found. Install Python 3 with numpy from python.org - Lito keeps looking…"
-		default:
-			msg = "The AI engine (server.py) was not found. Put this app back in its Lito folder (next to server.py, src/ and checkpoints/) or run it from a Lito checkout - Lito keeps looking…"
+
+	if serverPy == "" && len(candidates) == 0 {
+		m.set(stateMissing, "Neither Python nor the AI engine (server.py) was found. Install Python 3 with numpy (python.org) and keep this app inside its Lito folder - Lito keeps looking for both…")
+		return
+	}
+	if len(candidates) == 0 {
+		m.set(stateMissing, "Python was not found. Install Python 3 with numpy from python.org - Lito keeps looking…")
+		return
+	}
+	if serverPy == "" {
+		m.set(stateMissing, "The AI engine (server.py) was not found. Put this app back in its Lito folder (next to server.py, src/ and checkpoints/) or run it from a Lito checkout - Lito keeps looking…")
+		return
+	}
+
+	// Pre-flight: a real Python with numpy importable. This skips the
+	// Windows Store `python` stub and gives an actionable message when
+	// numpy is missing, instead of a crash-looping engine.
+	var py string
+	var lastFail string
+	for _, c := range candidates {
+		if ok, detail := pythonReady(c); ok {
+			py = c
+			break
+		} else {
+			lastFail = detail
+		}
+	}
+	if py == "" {
+		msg := "Python is installed but the numpy package is missing - open a terminal and run `pip install numpy`, then come back - Lito keeps checking…"
+		if m.pythonBin != "" {
+			msg = "The Python set with -python is not working (" + firstLine(lastFail) + ") - fix the path or leave the flag off. Lito keeps checking…"
 		}
 		m.set(stateMissing, msg)
-		sleepCtx(ctx, 5*time.Second)
 		return
 	}
 
 	bport, err := freePort()
 	if err != nil {
 		m.set(stateError, "could not find a free port for the engine: "+err.Error())
-		sleepCtx(ctx, 5*time.Second)
 		return
 	}
 	m.mu.Lock()
@@ -190,9 +216,9 @@ func (m *backendManager) spawn(ctx context.Context) {
 	child.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 	child.Stdout = log.Writer()
 	child.Stderr = log.Writer()
+	hideWindow(child) // never show a console window for the engine
 	if err := child.Start(); err != nil {
 		m.set(stateError, "could not start the AI engine: "+err.Error())
-		sleepCtx(ctx, 5*time.Second)
 		return
 	}
 
@@ -466,18 +492,50 @@ func freePort() (int, error) {
 	return strconv.Atoi(portStr)
 }
 
-// findPython locates a Python interpreter on PATH.
-func findPython() string {
-	candidates := []string{"python", "python3"}
+// pythonCandidates lists Python interpreters visible on PATH.
+func pythonCandidates() []string {
+	names := []string{"python", "python3"}
 	if runtime.GOOS == "windows" {
-		candidates = []string{"python", "py", "python3"}
+		names = []string{"python", "py", "python3"}
 	}
-	for _, c := range candidates {
-		if _, err := exec.LookPath(c); err == nil {
-			return c
+	var found []string
+	seen := map[string]bool{}
+	for _, c := range names {
+		if path, err := exec.LookPath(c); err == nil && !seen[path] {
+			seen[path] = true
+			found = append(found, c)
 		}
 	}
-	return ""
+	return found
+}
+
+// pythonReady reports whether `py` is a working Python with numpy
+// importable - the two things the AI engine needs. Runs hidden (no
+// console flash on Windows) and captures output for the error message.
+func pythonReady(py string) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, py, "-c", "import numpy")
+	hideWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, ""
+	}
+	detail := strings.TrimSpace(string(out))
+	if ctx.Err() != nil {
+		detail = "timed out"
+	}
+	if detail == "" {
+		detail = err.Error()
+	}
+	return false, detail
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // findServerPy looks for server.py next to the executable, near it, or in

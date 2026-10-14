@@ -52,7 +52,21 @@ async function refreshStatus() {
     s = await api("/api/version");
     setOffline(false);
   } catch (e) {
-    setOffline(true);
+    // The engine (or the whole backend) is unreachable: ask the desktop
+    // app why, and show its explanation until it recovers.
+    let text = "Backend connection lost — retrying…";
+    let kind = "err";
+    try {
+      const d = await api("/api/desktop/status");
+      if (d.state === "starting") {
+        text = d.message || "Starting the AI engine (Python)…";
+        kind = "info";
+      } else if (d.state === "missing" || d.state === "error") {
+        text = d.message || text;
+        kind = d.state === "missing" ? "warn" : "err";
+      }
+    } catch (_) { /* plain server.py has no /api/desktop/status */ }
+    setOffline(true, text, kind);
     return;
   }
   state.status = s;

@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.1** — see [Versions](#versions).
+**Current version: v1.2.2** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -333,10 +333,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.1**). Shown
+- **Application version** — the software itself (currently **v1.2.2**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.1 → v1.2.2 → ...).
+  patch number with every word or term the AI learns (v1.2.2 → v1.2.3 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
