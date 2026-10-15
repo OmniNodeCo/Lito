@@ -1,6 +1,9 @@
 // Command lito-desktop is the Lito desktop app, Ollama-style: it serves
-// the embedded web UI on a local port and runs the Python AI engine
-// (server.py) as a child process, proxying /api/* to it.
+// the embedded web UI on a local port and runs the AI engine as a child
+// process, proxying /api/* to it. The engine is the frozen LitoEngine
+// binary that ships in the release bundles (Python + numpy included, so
+// nothing needs to be installed); when running from a source checkout it
+// falls back to launching `python server.py`.
 //
 // The UI always starts, even when Python or server.py can't be found:
 // the page then shows a banner explaining what is missing, and the app
@@ -149,54 +152,55 @@ func (m *backendManager) runExternal(ctx context.Context) {
 	}
 }
 
-// spawn looks for python + server.py and starts the engine. When either
-// is missing (or Python can't import numpy) it records a helpful message
-// and returns without a child; run() throttles the retries.
+// spawn looks for the AI engine and starts it: the frozen LitoEngine
+// binary that ships in the LitoDesktop bundles first (no Python needed),
+// falling back to `python server.py` from a source checkout. When
+// nothing usable is found it records a helpful message and returns
+// without a child; run() throttles the retries.
 func (m *backendManager) spawn(ctx context.Context) {
 	m.stopChild()
 
-	// Candidate interpreters: the -python flag, or everything on PATH.
+	engineBin := findEngineBinary()
+	serverPy := findServerPy()
 	var candidates []string
 	if m.pythonBin != "" {
 		candidates = []string{m.pythonBin}
 	} else {
 		candidates = pythonCandidates()
 	}
-	serverPy := findServerPy()
 
-	if serverPy == "" && len(candidates) == 0 {
-		m.set(stateMissing, "Neither Python nor the AI engine (server.py) was found. Install Python 3 with numpy (python.org) and keep this app inside its Lito folder - Lito keeps looking for both…")
-		return
-	}
-	if len(candidates) == 0 {
-		m.set(stateMissing, "Python was not found. Install Python 3 with numpy from python.org - Lito keeps looking…")
-		return
-	}
-	if serverPy == "" {
-		m.set(stateMissing, "The AI engine (server.py) was not found. Put this app back in its Lito folder (next to server.py, src/ and checkpoints/) or run it from a Lito checkout - Lito keeps looking…")
-		return
-	}
-
-	// Pre-flight: a real Python with numpy importable. This skips the
-	// Windows Store `python` stub and gives an actionable message when
-	// numpy is missing, instead of a crash-looping engine.
-	var py string
-	var lastFail string
-	for _, c := range candidates {
-		if ok, detail := pythonReady(c); ok {
-			py = c
-			break
+	if engineBin == "" && serverPy == "" {
+		if len(candidates) > 0 {
+			m.set(stateMissing, "The AI engine was not found. Keep the app inside its unzipped Lito folder from the LitoDesktop zip (LitoDesktop + LitoEngine together), or run it from a Lito source checkout - Lito keeps looking…")
 		} else {
-			lastFail = detail
+			m.set(stateMissing, "The AI engine was not found. Keep the app inside its unzipped Lito folder from the LitoDesktop zip (LitoDesktop + LitoEngine together). Running from source? Install Python 3 with numpy from python.org - Lito keeps looking…")
 		}
-	}
-	if py == "" {
-		msg := "Python is installed but the numpy package is missing - open a terminal and run `pip install numpy`, then come back - Lito keeps checking…"
-		if m.pythonBin != "" {
-			msg = "The Python set with -python is not working (" + firstLine(lastFail) + ") - fix the path or leave the flag off. Lito keeps checking…"
-		}
-		m.set(stateMissing, msg)
 		return
+	}
+
+	// Source mode: the engine runs as `python server.py`, so a working
+	// Python with numpy is required. (The frozen engine needs nothing.)
+	py := ""
+	if engineBin == "" {
+		var lastFail string
+		for _, c := range candidates {
+			if ok, detail := pythonReady(c); ok {
+				py = c
+				break
+			} else {
+				lastFail = detail
+			}
+		}
+		if py == "" {
+			msg := "Python is installed but the numpy package is missing - open a terminal and run `pip install numpy`, then come back - Lito keeps checking…"
+			if len(candidates) == 0 {
+				msg = "The AI engine (server.py) was found but Python was not - install Python 3 with numpy from python.org - Lito keeps looking…"
+			} else if m.pythonBin != "" {
+				msg = "The Python set with -python is not working (" + firstLine(lastFail) + ") - fix the path or leave the flag off. Lito keeps checking…"
+			}
+			m.set(stateMissing, msg)
+			return
+		}
 	}
 
 	bport, err := freePort()
@@ -208,11 +212,20 @@ func (m *backendManager) spawn(ctx context.Context) {
 	m.backendURL = fmt.Sprintf("http://127.0.0.1:%d", bport)
 	m.mu.Unlock()
 
-	child := exec.Command(py, serverPy,
-		"--host", "127.0.0.1",
-		"--port", strconv.Itoa(bport),
-		"--no-browser")
-	child.Dir = filepath.Dir(serverPy) // so checkpoints/ & data/ resolve next to server.py
+	var child *exec.Cmd
+	if engineBin != "" {
+		child = exec.Command(engineBin,
+			"--host", "127.0.0.1",
+			"--port", strconv.Itoa(bport),
+			"--no-browser")
+		child.Dir = filepath.Dir(engineBin)
+	} else {
+		child = exec.Command(py, serverPy,
+			"--host", "127.0.0.1",
+			"--port", strconv.Itoa(bport),
+			"--no-browser")
+		child.Dir = filepath.Dir(serverPy) // so checkpoints/ & data/ resolve next to server.py
+	}
 	child.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 	child.Stdout = log.Writer()
 	child.Stderr = log.Writer()
@@ -238,8 +251,13 @@ func (m *backendManager) spawn(ctx context.Context) {
 		close(done)
 	}()
 
-	m.set(stateStarting, "Starting the AI engine (Python)…")
-	log.Printf("engine: %s %s --port %d", py, serverPy, bport)
+	if engineBin != "" {
+		m.set(stateStarting, "Starting the AI engine (LitoEngine)…")
+		log.Printf("engine: %s --port %d", engineBin, bport)
+	} else {
+		m.set(stateStarting, "Starting the AI engine (Python)…")
+		log.Printf("engine: %s %s --port %d", py, serverPy, bport)
+	}
 }
 
 // monitor watches a live engine: flips to ready when it answers, and to
@@ -536,6 +554,39 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// findEngineBinary locates the frozen AI engine (LitoEngine) that ships
+// in the LitoDesktop release bundles: a onedir build (LitoEngine/
+// LitoEngine[.exe] + _internal/) or a onefile binary, next to this
+// executable, near it, or in the working directory (covers dist/ inside
+// a source checkout too).
+func findEngineBinary() string {
+	name := "LitoEngine"
+	if runtime.GOOS == "windows" {
+		name = "LitoEngine.exe"
+	}
+	var dirs []string
+	if d := exeDir(); d != "" {
+		dirs = append(dirs,
+			d,
+			filepath.Join(d, "LitoEngine"),
+			filepath.Join(d, ".."),
+			filepath.Join(d, "..", "LitoEngine"),
+			filepath.Join(d, "..", ".."),
+			filepath.Join(d, "..", "..", "LitoEngine"),
+		)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, cwd, filepath.Join(cwd, "LitoEngine"))
+	}
+	for _, dir := range dirs {
+		p := filepath.Join(dir, name)
+		if fileExists(p) {
+			return filepath.Clean(p)
+		}
+	}
+	return ""
 }
 
 // findServerPy looks for server.py next to the executable, near it, or in

@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.2** — see [Versions](#versions).
+**Current version: v1.2.3** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -23,9 +23,12 @@ English dictionary, and live web search.
   toggles). It always launches, even when Python is missing: the UI then
   shows a banner explaining what to install and picks the engine up the
   moment it appears. Pure Go standard library, no external modules.
-  `python server.py` alone serves the same UI in your browser, no Go
-  needed. (The old tkinter GUI was removed in v1.2.1 — Python is only the
-  AI engine)
+  Release bundles ship the **frozen `LitoEngine`** (Python + numpy + the
+  trained model inside), so the desktop app runs with nothing installed.
+  From a source checkout the same app falls back to `python server.py`,
+  which also serves the identical UI in your browser with no Go at all.
+  (The old tkinter GUI was removed in v1.2.1 — Python is only the AI
+  engine)
 - **Optional extensions** — small plugins in `extensions/` add instant
   skills (calculator, dice, date & time ship built-in). Toggle them per
   session with `/extensions on|off <name>` or in the desktop app; the
@@ -59,6 +62,10 @@ pip install -r requirements.txt   # just numpy
 python server.py                  # modern web UI in your browser
 go run ./desktop                  # …or the Go desktop app wrapping it (needs Go)
 python main.py                    # terminal chat (trains or downloads a model if none found)
+
+Desktop users don't need any of this: the LitoDesktop release zips bundle
+the Go GUI with the frozen LitoEngine (Python + numpy + model included) —
+unzip and double-click.
 ```
 
 Or run without a model — the dictionary, knowledge base and search all work
@@ -195,15 +202,19 @@ cd desktop && go build      # pure stdlib, no modules to download
 Flags: `-port N`, `-backend URL` (talk to an already-running
 `python server.py`), `-python PATH`, `-no-browser`.
 
-The app **always launches**, even when Python or `server.py` can't be
-found: the UI shows a banner explaining what's missing and keeps looking
-for the engine in the background, so it recovers without a restart. If the
-engine crashes, it is restarted automatically. Diagnostics land in
-`lito-desktop.log` next to the binary (the Windows build has no console
-window). Release builds ship as `LitoDesktop-<os>-<arch>.zip` bundles that
-contain the binary **plus** the whole Python AI engine (`server.py`,
-`src/`, `data/`, the trained model) — unzip, install Python 3.8+ with
-numpy, double-click.
+The app **always launches**, even when the engine can't be found: the UI
+shows a banner explaining what's missing and keeps looking in the
+background, so it recovers without a restart. If the engine crashes, it is
+restarted automatically. Diagnostics land in `lito-desktop.log` next to
+the binary (the Windows build has no console window, and no terminal is
+ever shown for the engine either).
+
+Release builds ship as `LitoDesktop-<os>-<arch>.zip` bundles containing
+the Go binary **plus `LitoEngine/`** — the AI engine frozen with its own
+Python, numpy, `data/` and the trained model. **Nothing to install**:
+unzip and double-click. From a source checkout (no frozen engine present)
+the app runs `python server.py` instead, with a pre-flight check that the
+interpreter works and has numpy.
 
 **2. API server + browser — `server.py`.** Same UI, no Go needed:
 
@@ -333,10 +344,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.2**). Shown
+- **Application version** — the software itself (currently **v1.2.3**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.2 → v1.2.3 → ...).
+  patch number with every word or term the AI learns (v1.2.3 → v1.2.4 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -367,13 +378,14 @@ layout.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 67 tests, no network required
+python tests/test_features.py     # 68 tests, no network required
 ```
 
 Covers the dictionary, NLP pipeline, search parsing, brain routing, the
 extension system (including numerical-gradient checks of the new RoPE /
 RMSNorm / tied-weight backward passes), the model manager, the API server,
-the desktop app sources and the build configuration.
+the desktop app sources, the frozen-engine training shim and the build
+configuration.
 
 ## Releases
 
@@ -381,11 +393,11 @@ Two GitHub Actions workflows handle packaging and publishing:
 
 - **Build** (`.github/workflows/build.yml`) — on every push to main it runs
   the tests, trains a fresh model, packages `best_model.npz` +
-  `tokenizer.json`, builds standalone Windows/Linux/macOS executables (the
-  `Lito` terminal chat app), and cross-compiles the **Go desktop app**
-  (`LitoDesktop` for Windows, Linux and macOS, both Intel and Apple
-  silicon), bundling each binary with the whole Python AI engine into a
-  ready-to-run zip. It also keeps the `latest-model` release up to date.
+  `tokenizer.json`, then builds per platform (Windows, Linux, macOS Intel
+  + Apple silicon): the standalone `Lito` terminal chat app, the frozen
+  **`LitoEngine`** (Python + numpy + data + model inside) and the **Go
+  desktop app**, assembling the self-contained `LitoDesktop-*.zip`
+  bundles. It also keeps the `latest-model` release up to date.
 - **Release** (`.github/workflows/release.yml`) — publishes a versioned
   release from a green build run of the exact commit being released,
   waiting for a concurrent build when needed. Trigger it from the Actions

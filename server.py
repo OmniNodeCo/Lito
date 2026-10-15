@@ -241,7 +241,13 @@ class LitoServer:
         with self._train_lock:
             if self.train_state['running']:
                 return {'error': 'training is already running'}
-            cmd = [sys.executable, os.path.join(ROOT, 'train.py')]
+            if getattr(sys, 'frozen', False):
+                # Frozen engine: no python/train.py on disk - re-run this
+                # executable in trainer mode (see the --lito-train shim
+                # in main()).
+                cmd = [sys.executable, '--lito-train']
+            else:
+                cmd = [sys.executable, os.path.join(ROOT, 'train.py')]
             for key in TRAIN_INT_FIELDS:
                 try:
                     value = int(params.get(key))
@@ -474,6 +480,14 @@ def make_handler(server_state: LitoServer):
 
 
 def main():
+    # Frozen-engine helper: a PyInstaller-packaged engine has no separate
+    # python or train.py, so the API server re-runs ITS OWN executable to
+    # train (see start_training): LitoEngine --lito-train <train args>.
+    if len(sys.argv) > 1 and sys.argv[1] == '--lito-train':
+        sys.argv = ['train.py'] + sys.argv[2:]
+        from train import main as train_main
+        return train_main()
+
     parser = argparse.ArgumentParser(
         description=f'{APP_NAME} API server (local backend for the desktop app)')
     parser.add_argument('--port', type=int, default=5486,

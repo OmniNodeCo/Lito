@@ -72,101 +72,46 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-desktop:
-    name: Build desktop app (Go)
-    needs: train-and-package        # the desktop bundles ship the trained model
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
-
-      - name: Download trained model artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: trained-model
-
-      - name: Extract model
-        run: |
-          mkdir -p checkpoints
-          cd checkpoints
-          unzip -o ../model.zip
-
-      - name: Vet and build (all platforms)
-        run: |
-          cd desktop
-          go vet ./...
-          mkdir -p ../dist
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -H=windowsgui" -o ../dist/LitoDesktop-Windows.exe .
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-Linux .
-          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-macOS-intel .
-          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../dist/LitoDesktop-macOS-apple .
-
-      - name: Bundle the AI engine with each binary
-        run: |
-          cat > dist/README-DESKTOP.txt <<'EOF'
-          Lito - desktop app
-          ==================
-          The GUI is the Go app; the thinking happens in Python.
-
-          Run it:
-            Windows: double-click LitoDesktop-Windows.exe - a browser
-                     window opens. The app has no console; if anything
-                     goes wrong see lito-desktop.log next to the exe.
-            Linux:   ./LitoDesktop-Linux
-            macOS:   ./LitoDesktop-macOS-* (unsigned: right-click -> Open,
-                     or: xattr -d com.apple.quarantine LitoDesktop-macOS-*)
-
-          Requirements: Python 3.8+ with numpy on your PATH
-          (pip install numpy). The app starts the AI engine (server.py)
-          by itself and restarts it if it crashes. If the banner says the
-          engine is missing, install Python - no restart needed.
-
-          Without the Go app the same UI runs from Python alone:
-            python server.py            # http://127.0.0.1:5486
-          Terminal chat:  python main.py
-          Training:       python train.py --help
-          EOF
-          for name in Windows Linux macOS-intel macOS-apple; do
-            bin="dist/LitoDesktop-$name"
-            if [ "$name" = "Windows" ]; then bin="$bin.exe"; fi
-            test -f "$bin" || { echo "::error::missing $bin"; exit 1; }
-            rm -rf bundle/Lito && mkdir -p bundle/Lito
-            cp "$bin" bundle/Lito/
-            cp server.py main.py train.py dist/README-DESKTOP.txt bundle/Lito/
-            cp -r src extensions data checkpoints bundle/Lito/
-            rm -rf bundle/Lito/data/cache
-            (cd bundle && zip -qr "../dist/LitoDesktop-$name.zip" Lito)
-          done
-          ls -la dist
-
-      - name: Upload desktop app artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: lito-desktop
-          path: dist/*.zip
-          if-no-files-found: error
-          retention-days: 90
-
-  build-executables:
+  # One runner per platform builds everything users download:
+  # the Go desktop app, the frozen LitoEngine (Python + numpy + data +
+  # model included, so the desktop bundles need no Python installed) and
+  # the PyInstaller console chat app - then assembles the LitoDesktop
+  # bundle zip for that platform.
+  build-apps:
+    name: Build apps (${{ matrix.platform }})
     needs: train-and-package
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           - os: windows-latest
-            artifact_name: Lito-Windows
-            binary_name: Lito.exe
+            platform: Windows
+            exe: .exe
+            console: Lito.exe
+            console_artifact: Lito-Windows
+            desktop_artifact: desktop-Windows
+            go_ldflags: "-s -w -H=windowsgui"
           - os: ubuntu-latest
-            artifact_name: Lito-Linux
-            binary_name: Lito
+            platform: Linux
+            exe: ""
+            console: Lito
+            console_artifact: Lito-Linux
+            desktop_artifact: desktop-Linux
+            go_ldflags: "-s -w"
           - os: macos-latest
-            artifact_name: Lito-macOS
-            binary_name: Lito
+            platform: macOS-apple
+            exe: ""
+            console: Lito
+            console_artifact: Lito-macOS
+            desktop_artifact: desktop-macOS-apple
+            go_ldflags: "-s -w"
+          - os: macos-13
+            platform: macOS-intel
+            exe: ""
+            console: Lito
+            console_artifact: Lito-macOS-intel
+            desktop_artifact: desktop-macOS-intel
+            go_ldflags: "-s -w"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -188,27 +133,82 @@ jobs:
           name: trained-model
 
       - name: Extract model
+        shell: bash
         run: |
-          python -c "
-          import zipfile, os
-          os.makedirs('checkpoints', exist_ok=True)
-          with zipfile.ZipFile('model.zip', 'r') as z:
-              z.extractall('checkpoints')
-          "
+          mkdir -p checkpoints
+          cd checkpoints
+          unzip -o ../model.zip
 
-      - name: Build executables with PyInstaller
+      - name: Build executables with PyInstaller (console app + frozen AI engine)
         run: python build.py
 
-      - name: Check built binaries
+      - name: Check built executables
         shell: bash
         run: |
           ls -la dist
-          test -f "dist/${{ matrix.binary_name }}" || { echo "::error::missing dist/${{ matrix.binary_name }}"; exit 1; }
+          test -f "dist/${{ matrix.console }}" || { echo "::error::missing dist/${{ matrix.console }}"; exit 1; }
+          test -f "dist/LitoEngine/LitoEngine${{ matrix.exe }}" \
+            || { echo "::error::missing frozen engine dist/LitoEngine/LitoEngine${{ matrix.exe }}"; exit 1; }
 
-      - name: Upload Executable Artifacts
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Vet and build the desktop app
+        shell: bash
+        run: |
+          cd desktop
+          go vet ./...
+          mkdir -p ../dist
+          go build -trimpath -ldflags "${{ matrix.go_ldflags }}" -o "../dist/LitoDesktop-${{ matrix.platform }}${{ matrix.exe }}" .
+
+      - name: Assemble the LitoDesktop bundle
+        shell: bash
+        run: |
+          cat > dist/README-DESKTOP.txt <<'EOF'
+          Lito - desktop app
+          ==================
+          The GUI is the Go app; the thinking happens in LitoEngine, a
+          self-contained AI engine (Python + numpy + the trained model are
+          all included). Nothing to install - just run it.
+
+          Run it:
+            Windows: double-click LitoDesktop-Windows.exe - a browser
+                     window opens. The app has no console; if anything
+                     goes wrong see lito-desktop.log next to the exe.
+            Linux:   ./LitoDesktop-Linux
+            macOS:   ./LitoDesktop-macOS-* (unsigned: right-click -> Open,
+                     or: xattr -d com.apple.quarantine LitoDesktop-macOS-*)
+
+          The desktop app starts LitoEngine automatically and restarts it
+          if it crashes. If the banner says the engine is missing, keep
+          LitoDesktop and LitoEngine in the same folder.
+
+          Without the Go app the same UI runs from the engine alone:
+            LitoEngine/LitoEngine            # http://127.0.0.1:5486
+          Terminal chat (needs no engine): ./Lito
+          Training: click "Train" in the app (the engine re-runs itself).
+          EOF
+          rm -rf bundle/Lito && mkdir -p bundle/Lito
+          cp "dist/LitoDesktop-${{ matrix.platform }}${{ matrix.exe }}" bundle/Lito/
+          cp -r dist/LitoEngine bundle/Lito/
+          cp dist/README-DESKTOP.txt bundle/Lito/
+          python -c "import shutil; shutil.make_archive('dist/LitoDesktop-${{ matrix.platform }}', 'zip', 'bundle')"
+          ls -la dist
+
+      - name: Upload console chat app
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: dist
+          name: ${{ matrix.console_artifact }}
+          path: dist/${{ matrix.console }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload desktop bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.desktop_artifact }}
+          path: dist/LitoDesktop-${{ matrix.platform }}.zip
           if-no-files-found: error
           retention-days: 90

@@ -984,7 +984,7 @@ def train_script_supports_classic_flag():
 
 
 @test
-def build_config_defines_console_target():
+def build_config_defines_console_and_engine_targets():
     import build as build_mod
     cwd = os.getcwd()
     os.chdir(REPO_ROOT)
@@ -996,9 +996,30 @@ def build_config_defines_console_target():
     assert 'Lito' in targets, targets
     assert targets['Lito']['entry_point'] == 'main.py'
     assert targets['Lito']['console'] is True
+    # the frozen AI engine: server.py, onedir so learned words / models
+    # persist next to it, with the UI bundled so it serves the app too
+    assert targets['LitoEngine']['entry_point'] == 'server.py'
+    assert targets['LitoEngine']['console'] is True
+    assert targets['LitoEngine']['onefile'] is False
+    assert 'desktop/ui' in targets['LitoEngine']['extra_data']
     # data dirs shipped with every executable
     assert 'extensions' in config['extra_data']
     assert 'data' in config['extra_data']
+
+
+@test
+def server_supports_frozen_engine_training():
+    """A PyInstaller-packaged engine has no python/train.py on disk; the
+    server re-runs its own executable as the trainer via --lito-train."""
+    src = open(os.path.join(REPO_ROOT, 'server.py'), encoding='utf-8').read()
+    assert '--lito-train' in src
+    assert "getattr(sys, 'frozen', False)" in src
+    # and the shim actually runs train.py's CLI
+    import subprocess as sp_mod
+    r = sp_mod.run([sys.executable, 'server.py', '--lito-train', '--help'],
+                   capture_output=True, text=True, cwd=REPO_ROOT, timeout=120)
+    assert r.returncode == 0, r.stderr
+    assert '--epochs' in r.stdout
 
 
 @test
@@ -1019,9 +1040,9 @@ def python_gui_fully_removed():
 
 
 @test
-def version_is_1_2_2():
-    assert __version__ == '1.2.2', __version__
-    assert format_version() == 'v1.2.2'
+def version_is_1_2_3():
+    assert __version__ == '1.2.3', __version__
+    assert format_version() == 'v1.2.3'
 
 
 # ----------------------------------------------------------------------
@@ -1142,6 +1163,9 @@ def desktop_app_sources_present():
                                        'exec_other.go'))
     assert 'hideWindow' in main_go
     assert 'import numpy' in main_go
+    # The frozen engine ships in the release bundles: no Python needed.
+    assert 'findEngineBinary' in main_go
+    assert 'LitoEngine' in main_go
     app_js = open(os.path.join(ui, 'app.js'), encoding='utf-8').read()
     assert '/api/desktop/status' in app_js
     gomod = open(os.path.join(REPO_ROOT, 'desktop', 'go.mod'),

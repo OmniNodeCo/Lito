@@ -20,13 +20,23 @@ hidden_imports: [numpy, json, re, os, sys, time, argparse]
 #   name             output name (dist/<name>)
 #   entry_point       script to freeze
 #   console          true = terminal app
+#   onefile          false = a folder (exe + _internal/) - used by the
+#                    engine so learned words, caches and trained models
+#                    persist next to it instead of a temp dir
+#   extra_data       per-target override of the shared data dirs
 #
-# (The GUI used to live here as a frozen tkinter app. The GUI is the Go
-# desktop app now - see desktop/ - and Python is only the AI engine.)
+# The desktop app is the Go app (desktop/); LitoEngine is the AI engine
+# frozen with its own Python + numpy, so the LitoDesktop release bundles
+# need no Python installed.
 targets:
   - name: Lito
     entry_point: main.py
     console: true
+  - name: LitoEngine
+    entry_point: server.py
+    console: true
+    onefile: false
+    extra_data: [checkpoints, src, data, extensions, desktop/ui]
 
 # Platform-specific settings
 # windows:
