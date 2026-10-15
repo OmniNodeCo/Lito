@@ -105,13 +105,6 @@ jobs:
             console_artifact: Lito-macOS
             desktop_artifact: desktop-macOS-apple
             go_ldflags: "-s -w"
-          - os: macos-13
-            platform: macOS-intel
-            exe: ""
-            console: Lito
-            console_artifact: Lito-macOS-intel
-            desktop_artifact: desktop-macOS-intel
-            go_ldflags: "-s -w"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code

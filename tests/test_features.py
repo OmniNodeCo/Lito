@@ -1040,9 +1040,9 @@ def python_gui_fully_removed():
 
 
 @test
-def version_is_1_2_3():
-    assert __version__ == '1.2.3', __version__
-    assert format_version() == 'v1.2.3'
+def version_is_1_2_4():
+    assert __version__ == '1.2.4', __version__
+    assert format_version() == 'v1.2.4'
 
 
 # ----------------------------------------------------------------------

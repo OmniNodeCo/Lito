@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.3** — see [Versions](#versions).
+**Current version: v1.2.4** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -344,10 +344,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.3**). Shown
+- **Application version** — the software itself (currently **v1.2.4**). Shown
   at startup, in `/info`, in identity answers and via `python main.py --version`.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.3 → v1.2.4 → ...).
+  patch number with every word or term the AI learns (v1.2.4 → v1.2.5 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -393,8 +393,8 @@ Two GitHub Actions workflows handle packaging and publishing:
 
 - **Build** (`.github/workflows/build.yml`) — on every push to main it runs
   the tests, trains a fresh model, packages `best_model.npz` +
-  `tokenizer.json`, then builds per platform (Windows, Linux, macOS Intel
-  + Apple silicon): the standalone `Lito` terminal chat app, the frozen
+  `tokenizer.json`, then builds per platform (Windows, Linux, macOS Apple
+  silicon): the standalone `Lito` terminal chat app, the frozen
   **`LitoEngine`** (Python + numpy + data + model inside) and the **Go
   desktop app**, assembling the self-contained `LitoDesktop-*.zip`
   bundles. It also keeps the `latest-model` release up to date.
