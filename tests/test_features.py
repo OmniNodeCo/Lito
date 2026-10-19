@@ -984,7 +984,7 @@ def train_script_supports_classic_flag():
 
 
 @test
-def build_config_defines_console_and_engine_targets():
+def build_config_defines_engine_target():
     import build as build_mod
     cwd = os.getcwd()
     os.chdir(REPO_ROOT)
@@ -993,16 +993,16 @@ def build_config_defines_console_and_engine_targets():
     finally:
         os.chdir(cwd)
     targets = {t['name']: t for t in config['targets']}
-    assert 'Lito' in targets, targets
-    assert targets['Lito']['entry_point'] == 'main.py'
-    assert targets['Lito']['console'] is True
-    # the frozen AI engine: server.py, onedir so learned words / models
-    # persist next to it, with the UI bundled so it serves the app too
+    # the UI is the app; the only frozen executable is the AI engine:
+    # server.py, onedir so learned words / models persist next to it,
+    # with the UI bundled so it serves the app standalone too
+    assert 'LitoEngine' in targets, targets
+    assert 'Lito' not in targets, 'the terminal chat app is gone (v1.2.5)'
     assert targets['LitoEngine']['entry_point'] == 'server.py'
     assert targets['LitoEngine']['console'] is True
     assert targets['LitoEngine']['onefile'] is False
     assert 'desktop/ui' in targets['LitoEngine']['extra_data']
-    # data dirs shipped with every executable
+    # data dirs shipped with the engine
     assert 'extensions' in config['extra_data']
     assert 'data' in config['extra_data']
 
@@ -1040,9 +1040,26 @@ def python_gui_fully_removed():
 
 
 @test
-def version_is_1_2_4():
-    assert __version__ == '1.2.4', __version__
-    assert format_version() == 'v1.2.4'
+def python_cli_fully_removed():
+    """The terminal chat app is gone (v1.2.5): the UI is the app - the
+    Go desktop app / server.py browser UI - and the engine sets itself
+    up via the in-app first-run download."""
+    assert not os.path.exists(os.path.join(REPO_ROOT, 'main.py')), \
+        'main.py should be gone (the UI is the app now)'
+    assert not os.path.exists(os.path.join(REPO_ROOT, 'run.sh'))
+    assert not os.path.exists(os.path.join(REPO_ROOT, 'run.bat'))
+    setup_py = open(os.path.join(REPO_ROOT, 'setup.py'),
+                    encoding='utf-8').read()
+    assert 'main:main' not in setup_py and "'main'" not in setup_py
+    build_cfg = open(os.path.join(REPO_ROOT, 'build.yml'),
+                     encoding='utf-8').read()
+    assert 'main.py' not in build_cfg
+
+
+@test
+def version_is_1_2_5():
+    assert __version__ == '1.2.5', __version__
+    assert format_version() == 'v1.2.5'
 
 
 # ----------------------------------------------------------------------
@@ -1166,6 +1183,16 @@ def desktop_app_sources_present():
     # The frozen engine ships in the release bundles: no Python needed.
     assert 'findEngineBinary' in main_go
     assert 'LitoEngine' in main_go
+    # In-app setup: auto-download + unpack the engine on first run.
+    assert '/api/desktop/setup' in main_go
+    setup_go = open(os.path.join(REPO_ROOT, 'desktop', 'setup.go'),
+                    encoding='utf-8').read()
+    assert 'LITO_ENGINE_URL' in setup_go
+    assert 'LitoEngine-' in setup_go
+    html = open(os.path.join(ui, 'index.html'), encoding='utf-8').read()
+    assert 'setup-overlay' in html and 'btn-setup' in html
+    app_js = open(os.path.join(ui, 'app.js'), encoding='utf-8').read()
+    assert 'api/desktop/setup' in app_js
     app_js = open(os.path.join(ui, 'app.js'), encoding='utf-8').read()
     assert '/api/desktop/status' in app_js
     gomod = open(os.path.join(REPO_ROOT, 'desktop', 'go.mod'),

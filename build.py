@@ -36,13 +36,13 @@ def load_build_config():
     several executables to build:
 
         targets:
-          - name: Lito
-            entry_point: main.py
+          - name: LitoEngine
+            entry_point: server.py
             console: true
     """
     config = {
         'name': 'Lito',
-        'entry_point': 'main.py',
+        'entry_point': 'server.py',
         'icon': None,
         'onefile': True,
         'console': True,
@@ -110,7 +110,7 @@ def _build_target(config: dict, target: dict):
     Returns (status, exe_path) with status in {'built', 'skipped', 'failed'}.
     """
     name = str(target.get('name') or config.get('name', 'Lito'))
-    entry = str(target.get('entry_point') or config.get('entry_point', 'main.py'))
+    entry = str(target.get('entry_point') or config.get('entry_point', 'server.py'))
     console = target.get('console', config.get('console', True))
     onefile = target.get('onefile', config.get('onefile', True))
     icon = target.get('icon', config.get('icon'))
@@ -184,7 +184,7 @@ def build():
         # Older flat config: a single target from the top-level keys.
         targets = [{
             'name': config.get('name', 'Lito'),
-            'entry_point': config.get('entry_point', 'main.py'),
+            'entry_point': config.get('entry_point', 'server.py'),
             'console': config.get('console', True),
         }]
 
@@ -208,7 +208,7 @@ def build():
         print(f"  FAILED:    {name}")
     if built:
         print("  Output directory: dist/")
-        print("  Run: dist/Lito (terminal chat app)")
+        print("  Engine: dist/LitoEngine/ (onedir)")
         print("  GUI: build the Go desktop app instead (cd desktop && go build)")
     print("=" * 50)
 

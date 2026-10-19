@@ -44,6 +44,36 @@ body {
 #offline-banner.warn { background: #b8860b; }
 #offline-banner.info { background: #3a6ea5; }
 
+/* First-run setup overlay */
+
+#setup-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(10, 12, 16, 0.92);
+  display: flex; align-items: center; justify-content: center;
+}
+.setup-card {
+  width: min(420px, 90vw);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 34px 30px 28px;
+  text-align: center;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+.setup-mark { font-size: 40px; color: var(--accent); margin-bottom: 6px; }
+.setup-card h1 { font-size: 22px; margin: 0 0 10px; }
+.setup-card p { color: var(--text-dim); font-size: 14px; line-height: 1.55; margin: 0 0 18px; }
+.setup-progress {
+  height: 8px; border-radius: 6px; overflow: hidden;
+  background: var(--border); margin: 16px 0 6px;
+}
+#setup-progress-bar {
+  height: 100%; width: 0;
+  background: var(--accent);
+  transition: width 0.25s ease;
+}
+.setup-status { font-size: 13px; color: var(--text-dim); min-height: 18px; margin-top: 8px; }
+
 /* ============================== Layout ============================== */
 
 #app { display: flex; height: 100vh; }

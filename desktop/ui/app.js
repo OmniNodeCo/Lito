@@ -64,11 +64,13 @@ async function refreshStatus() {
       } else if (d.state === "missing" || d.state === "error") {
         text = d.message || text;
         kind = d.state === "missing" ? "warn" : "err";
+        if (d.state === "missing") showSetup();
       }
     } catch (_) { /* plain server.py has no /api/desktop/status */ }
     setOffline(true, text, kind);
     return;
   }
+  hideSetup();
   state.status = s;
   $("brand-ver").textContent = s.version;
   $("model-chip-text").textContent =
@@ -95,6 +97,80 @@ function setOffline(off, text, kind) {
   if (off === state.offline) return;
   state.offline = off;
   if (!off) toast("Backend reconnected", "ok");
+}
+
+/* ------------------------- First-run setup ------------------------- */
+
+let setupTimer = null;
+
+function showSetup() {
+  if (!$("setup-overlay").classList.contains("hidden")) return;
+  $("setup-overlay").classList.remove("hidden");
+  const btn = $("btn-setup");
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = "Downloading…";
+    $("setup-status").textContent = "";
+    try {
+      const r = await post("/api/desktop/setup");
+      if (r.engine_present) { hideSetup(); return; }
+      if (!r.started && r.error) throw new Error(r.error);
+    } catch (e) {
+      $("setup-status").textContent = `Could not start the setup (${e.message})`;
+      resetSetupButton();
+      return;
+    }
+    pollSetup();
+  };
+}
+
+function hideSetup() {
+  $("setup-overlay").classList.add("hidden");
+  if (setupTimer) { clearInterval(setupTimer); setupTimer = null; }
+}
+
+function resetSetupButton() {
+  const btn = $("btn-setup");
+  btn.disabled = false;
+  btn.textContent = "↻ Retry";
+}
+
+function pollSetup() {
+  if (setupTimer) clearInterval(setupTimer);
+  setupTimer = setInterval(async () => {
+    let d;
+    try {
+      d = await api("/api/desktop/setup");
+    } catch (e) {
+      return; // app gone; the 5s status poll handles the rest
+    }
+    if (d.state === "downloading") {
+      const bar = $("setup-progress");
+      bar.classList.remove("hidden");
+      if (d.total > 0) {
+        const pct = Math.min(100, Math.round((d.downloaded / d.total) * 100));
+        $("setup-progress-bar").style.width = pct + "%";
+        $("setup-status").textContent =
+          `Downloading the AI engine… ${pct}% (${(d.downloaded / 1048576).toFixed(1)} of ${(d.total / 1048576).toFixed(1)} MB)`;
+      } else {
+        $("setup-progress-bar").style.width = "100%";
+        $("setup-status").textContent =
+          `Downloading the AI engine… (${(d.downloaded / 1048576).toFixed(1)} MB so far)`;
+      }
+    } else if (d.state === "extracting") {
+      $("setup-progress").classList.remove("hidden");
+      $("setup-progress-bar").style.width = "100%";
+      $("setup-status").textContent = "Unpacking the AI engine…";
+    } else if (d.state === "done") {
+      $("setup-status").textContent = "Starting the AI engine…";
+      // the engine supervisor picks it up within ~5s; refreshStatus()
+      // hides this overlay once the backend answers
+    } else if (d.state === "error") {
+      clearInterval(setupTimer); setupTimer = null;
+      $("setup-status").textContent = d.message || "The setup failed.";
+      resetSetupButton();
+    }
+  }, 700);
 }
 
 /* ------------------------------ Models ------------------------------ */

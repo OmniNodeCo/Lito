@@ -133,7 +133,7 @@ def main():
     print("\n" + "=" * 60)
     print("  Training Complete!")
     print(f"  Model saved to: {args.save_dir}/")
-    print(f"  Run 'python main.py' to chat with your AI")
+    print(f"  Start the Lito app (or run python server.py) to chat with your AI")
     print("=" * 60)
 
 

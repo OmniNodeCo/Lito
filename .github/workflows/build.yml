@@ -72,11 +72,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # One runner per platform builds everything users download:
-  # the Go desktop app, the frozen LitoEngine (Python + numpy + data +
-  # model included, so the desktop bundles need no Python installed) and
-  # the PyInstaller console chat app - then assembles the LitoDesktop
-  # bundle zip for that platform.
+  # One runner per platform builds everything users download: the Go
+  # desktop app (the UI), the frozen LitoEngine (Python + numpy + data +
+  # model included, so nothing needs to be installed) and two zips - the
+  # full LitoDesktop bundle and the engine-only zip the app's in-app
+  # setup auto-downloads. The old terminal chat app is gone (v1.2.5).
   build-apps:
     name: Build apps (${{ matrix.platform }})
     needs: train-and-package
@@ -87,22 +87,16 @@ jobs:
           - os: windows-latest
             platform: Windows
             exe: .exe
-            console: Lito.exe
-            console_artifact: Lito-Windows
             desktop_artifact: desktop-Windows
             go_ldflags: "-s -w -H=windowsgui"
           - os: ubuntu-latest
             platform: Linux
             exe: ""
-            console: Lito
-            console_artifact: Lito-Linux
             desktop_artifact: desktop-Linux
             go_ldflags: "-s -w"
           - os: macos-latest
             platform: macOS-apple
             exe: ""
-            console: Lito
-            console_artifact: Lito-macOS
             desktop_artifact: desktop-macOS-apple
             go_ldflags: "-s -w"
     runs-on: ${{ matrix.os }}
@@ -132,16 +126,25 @@ jobs:
           cd checkpoints
           unzip -o ../model.zip
 
-      - name: Build executables with PyInstaller (console app + frozen AI engine)
+      - name: Build the frozen AI engine with PyInstaller
         run: python build.py
 
-      - name: Check built executables
+      - name: Check the engine build
         shell: bash
         run: |
           ls -la dist
-          test -f "dist/${{ matrix.console }}" || { echo "::error::missing dist/${{ matrix.console }}"; exit 1; }
           test -f "dist/LitoEngine/LitoEngine${{ matrix.exe }}" \
             || { echo "::error::missing frozen engine dist/LitoEngine/LitoEngine${{ matrix.exe }}"; exit 1; }
+
+      # Engine-only zip: what the desktop app's in-app setup downloads
+      # when it finds no engine next to itself (LitoEngine-<platform>.zip
+      # on the latest GitHub release). Must run BEFORE the Go app build
+      # adds its binary to dist/.
+      - name: Package the engine-only zip
+        shell: bash
+        run: |
+          python -c "import shutil; shutil.make_archive('dist/LitoEngine-${{ matrix.platform }}', 'zip', 'dist')"
+          ls -la dist
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -190,18 +193,18 @@ jobs:
           python -c "import shutil; shutil.make_archive('dist/LitoDesktop-${{ matrix.platform }}', 'zip', 'bundle')"
           ls -la dist
 
-      - name: Upload console chat app
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.console_artifact }}
-          path: dist/${{ matrix.console }}
-          if-no-files-found: error
-          retention-days: 90
-
       - name: Upload desktop bundle
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.desktop_artifact }}
           path: dist/LitoDesktop-${{ matrix.platform }}.zip
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload engine-only zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.platform }}
+          path: dist/LitoEngine-${{ matrix.platform }}.zip
           if-no-files-found: error
           retention-days: 90

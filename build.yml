@@ -16,7 +16,8 @@ extra_data: [checkpoints, src, data, extensions]
 # Hidden imports that PyInstaller might miss (shared by all targets)
 hidden_imports: [numpy, json, re, os, sys, time, argparse]
 
-# Build targets - one standalone executable each:
+# Build targets (the app is the UI: the Go desktop app + the frozen
+# engine below; the old terminal chat app was removed in v1.2.5):
 #   name             output name (dist/<name>)
 #   entry_point       script to freeze
 #   console          true = terminal app
@@ -29,9 +30,6 @@ hidden_imports: [numpy, json, re, os, sys, time, argparse]
 # frozen with its own Python + numpy, so the LitoDesktop release bundles
 # need no Python installed.
 targets:
-  - name: Lito
-    entry_point: main.py
-    console: true
   - name: LitoEngine
     entry_point: server.py
     console: true

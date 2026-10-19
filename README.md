@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.4** — see [Versions](#versions).
+**Current version: v1.2.5** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -59,20 +59,20 @@ English dictionary, and live web search.
 
 ```bash
 pip install -r requirements.txt   # just numpy
-python server.py                  # modern web UI in your browser
+python server.py                  # the web UI in your browser
 go run ./desktop                  # …or the Go desktop app wrapping it (needs Go)
-python main.py                    # terminal chat (trains or downloads a model if none found)
 
 Desktop users don't need any of this: the LitoDesktop release zips bundle
 the Go GUI with the frozen LitoEngine (Python + numpy + model included) —
-unzip and double-click.
+unzip and double-click. And if the engine is ever missing, the app now
+sets itself up: a first-run screen downloads the engine (about 30 MB,
+once) straight into the app folder — no installer, no terminal.
 ```
 
 Or run without a model — the dictionary, knowledge base and search all work
 without any training:
 
 ```bash
-python main.py --chat-only
 ```
 
 ## Example session
@@ -150,11 +150,6 @@ python server.py                    # API server + web UI (port 5486)
 python server.py --port 8000 --no-search --no-browser
 go run ./desktop                    # Go desktop app (launches server.py)
 desktop/lito-desktop --backend http://127.0.0.1:5486   # reuse a running backend
-python main.py --train              # train the model locally, then chat
-python main.py --download           # download a trained model from GitHub Releases
-python main.py --chat-only          # skip the model entirely
-python main.py --no-search          # disable web search (everything else stays)
-python main.py --no-online-dictionary  # offline-only definitions
 ```
 
 ## How it works
@@ -189,7 +184,7 @@ combined answer (all clause answers joined)
 
 ### Desktop GUI
 
-Three ways to run the same app:
+Two ways to run the same app:
 
 **1. Go desktop app — `desktop/`.** Ollama-style: a small Go binary runs
 the Python AI engine in the background and serves the modern web UI:
@@ -212,9 +207,13 @@ ever shown for the engine either).
 Release builds ship as `LitoDesktop-<os>-<arch>.zip` bundles containing
 the Go binary **plus `LitoEngine/`** — the AI engine frozen with its own
 Python, numpy, `data/` and the trained model. **Nothing to install**:
-unzip and double-click. From a source checkout (no frozen engine present)
-the app runs `python server.py` instead, with a pre-flight check that the
-interpreter works and has numpy.
+unzip and double-click. If the engine is missing (or you start with just
+the GUI binary), a first-run **Set up Lito** screen downloads
+`LitoEngine-<platform>.zip` from the latest release, unpacks it next to
+the app and starts it — the setup runs entirely inside the app. From a
+source checkout (no frozen engine present) the app runs `python
+server.py` instead, with a pre-flight check that the interpreter works
+and has numpy.
 
 **2. API server + browser — `server.py`.** Same UI, no Go needed:
 
@@ -227,9 +226,6 @@ python server.py            # http://127.0.0.1:5486
 `/api/extensions`, `/api/train` and friends — all localhost-only, standard
 library only.
 
-**3. Terminal chat — `main.py`.** No GUI, just the conversation, with the
-same brain and extensions.
-
 All of them share one feature set (built on the same `ModelManager` and
 `ExtensionManager`):
 
@@ -237,7 +233,7 @@ All of them share one feature set (built on the same `ModelManager` and
   everything downloaded), *Download…* opens the **version database**
   browser listing all GitHub Releases with sizes and dates; ⟳ refreshes,
   🗑 deletes, ⚙ *Train…* opens the training dialog
-- **Chat pane** — same brain as the terminal chat, including slash
+- **Chat pane** — the brain behind the API, including slash
   commands
 - **Extensions & settings** — per-extension toggles and a web-search
   toggle that take effect immediately
@@ -344,10 +340,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.4**). Shown
-  at startup, in `/info`, in identity answers and via `python main.py --version`.
+- **Application version** — the software itself (currently **v1.2.5**). Shown
+  at startup, in `/info` and in identity answers.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.4 → v1.2.5 → ...).
+  patch number with every word or term the AI learns (v1.2.5 → v1.2.6 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -378,7 +374,7 @@ layout.
 ## Tests
 
 ```bash
-python tests/test_features.py     # 68 tests, no network required
+python tests/test_features.py     # 69 tests, no network required
 ```
 
 Covers the dictionary, NLP pipeline, search parsing, brain routing, the
@@ -394,24 +390,23 @@ Two GitHub Actions workflows handle packaging and publishing:
 - **Build** (`.github/workflows/build.yml`) — on every push to main it runs
   the tests, trains a fresh model, packages `best_model.npz` +
   `tokenizer.json`, then builds per platform (Windows, Linux, macOS Apple
-  silicon): the standalone `Lito` terminal chat app, the frozen
-  **`LitoEngine`** (Python + numpy + data + model inside) and the **Go
-  desktop app**, assembling the self-contained `LitoDesktop-*.zip`
-  bundles. It also keeps the `latest-model` release up to date.
+  silicon): the frozen **`LitoEngine`** (Python + numpy + data + model
+  inside) and the **Go desktop app**, assembling the self-contained
+  `LitoDesktop-*.zip` bundles plus the engine-only zips the in-app setup
+  downloads. It also keeps the `latest-model` release up to date.
 - **Release** (`.github/workflows/release.yml`) — publishes a versioned
   release from a green build run of the exact commit being released,
   waiting for a concurrent build when needed. Trigger it from the Actions
   tab ("Release Lito" -> "Run workflow"), or push a `v*` tag.
 
-`python main.py --download` fetches the model from the latest release, and
-the desktop app's *Download…* button lists every published version (the
-"version database") and downloads it into `models/<tag>/` — releases work
-with both right away.
+The desktop app's *Download…* button lists every published version (the
+"version database") and downloads the model into `models/<tag>/`, and its
+first-run setup screen fetches the engine itself — the release is what
+makes the app fully self-installing.
 
 ## Project layout
 
 ```
-main.py               chat entry point
 server.py             local API server + web UI backend (Ollama-style)
 desktop/              Go desktop app: main.go, go.mod, ui/ (web UI)
 train.py              training entry point

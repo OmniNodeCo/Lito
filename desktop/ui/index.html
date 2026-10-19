@@ -10,6 +10,22 @@
 <body>
   <div id="offline-banner" class="hidden">Backend connection lost — retrying…</div>
 
+  <!-- First-run setup: download the AI engine straight from the app -->
+  <div id="setup-overlay" class="hidden">
+    <div class="setup-card">
+      <div class="setup-mark">◆</div>
+      <h1>Set up Lito</h1>
+      <p>Lito needs its AI engine — a one-time download (about 30&nbsp;MB)
+        that includes Python, the trained model and everything else.
+        It runs fully offline afterwards.</p>
+      <button id="btn-setup" class="btn btn-primary btn-block">⬇&nbsp; Download &amp; set up</button>
+      <div id="setup-progress" class="setup-progress hidden">
+        <div id="setup-progress-bar"></div>
+      </div>
+      <div id="setup-status" class="setup-status"></div>
+    </div>
+  </div>
+
   <div id="app">
     <!-- ======================= Sidebar ======================= -->
     <aside id="sidebar">

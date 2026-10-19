@@ -4,13 +4,13 @@ Version information for Lito.
 The AI carries two version numbers:
 
 - The application version (e.g. 1.1.0) - the software itself, shown at
-  startup, in chat and via `python main.py --version`.
+  startup, in the UI and via `python server.py`.
 - The knowledge version - starts at the application version and bumps its
   patch number every time the AI learns a new word or term from the web
   (see src/dictionary.py), e.g. 1.1.0 -> 1.1.1 -> 1.1.2.
 """
 
-__version__ = '1.2.4'
+__version__ = '1.2.5'
 APP_NAME = 'Lito'
 
 

@@ -171,9 +171,9 @@ func (m *backendManager) spawn(ctx context.Context) {
 
 	if engineBin == "" && serverPy == "" {
 		if len(candidates) > 0 {
-			m.set(stateMissing, "The AI engine was not found. Keep the app inside its unzipped Lito folder from the LitoDesktop zip (LitoDesktop + LitoEngine together), or run it from a Lito source checkout - Lito keeps looking…")
+			m.set(stateMissing, "The AI engine is missing. Use Set up Lito to download it (about 30 MB, once), or keep the app inside its unzipped Lito folder - Lito keeps looking…")
 		} else {
-			m.set(stateMissing, "The AI engine was not found. Keep the app inside its unzipped Lito folder from the LitoDesktop zip (LitoDesktop + LitoEngine together). Running from source? Install Python 3 with numpy from python.org - Lito keeps looking…")
+			m.set(stateMissing, "The AI engine is missing. Use Set up Lito to download it (about 30 MB, once), or run from a source checkout with Python 3 + numpy - Lito keeps looking…")
 		}
 		return
 	}
@@ -356,6 +356,7 @@ func main() {
 		pythonBin:  *pythonBin,
 		external:   backendURL != "",
 	}
+	setup := &setupManager{state: setupIdle}
 
 	// Proxy /api/* to wherever the engine currently is. The target is
 	// resolved per request: the engine URL is only known once it spawns,
@@ -401,6 +402,34 @@ func main() {
 		state, msg := mgr.snapshot()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		fmt.Fprintf(w, `{"state": %q, "message": %q}`, state, msg)
+	})
+	// In-app setup: install the engine when it is missing. GET reports
+	// progress, POST starts the download (both are served by the Go app,
+	// never proxied to the engine - the engine may not exist yet).
+	mux.HandleFunc("/api/desktop/setup", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		enginePresent := findEngineBinary() != ""
+		if r.Method == http.MethodPost {
+			if enginePresent {
+				fmt.Fprintf(w, `{"started": false, "engine_present": true}`)
+				return
+			}
+			if setup.begin() {
+				go setup.run(exeDir())
+				fmt.Fprintf(w, `{"started": true}`)
+			} else {
+				fmt.Fprintf(w, `{"started": false, "error": "setup is already running"}`)
+			}
+			return
+		}
+		state, msg, got, total, _ := setup.snapshot()
+		url, urlErr := engineZipURL()
+		urlJSON := "null"
+		if urlErr == nil {
+			urlJSON = fmt.Sprintf("%q", url)
+		}
+		fmt.Fprintf(w, `{"engine_present": %t, "state": %q, "message": %q, "downloaded": %d, "total": %d, "url": %s}`,
+			enginePresent, state, msg, got, total, urlJSON)
 	})
 	mux.Handle("/api/", proxy)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

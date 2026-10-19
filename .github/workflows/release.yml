@@ -7,10 +7,10 @@ name: Release Lito
 #      If a build of that commit is still running (e.g. the one triggered
 #      by this very tag push), wait for it to finish.
 #   2. Download that run's artifacts: best_model.npz + tokenizer.json
-#      (from the 'trained-model' artifact), the Windows/Linux/macOS
-#      executables and the self-contained Go desktop app bundles (each
-#      zip = the Go GUI binary + the frozen LitoEngine, with Python +
-#      numpy + the trained model inside).
+#      (from the 'trained-model' artifact), the engine-only zips (what
+#      the app's in-app setup auto-downloads) and the self-contained Go
+#      desktop app bundles (each zip = the Go GUI binary + the frozen
+#      LitoEngine, with Python + numpy + the trained model inside).
 #   3. Publish everything as a GitHub Release, tagged with the app version
 #      of the commit that was built (e.g. v1.2.0).
 #
@@ -179,7 +179,7 @@ jobs:
           LISTED="$(jq -r '.[].name' <<<"$ARTIFACTS")"
 
           MISSING=""
-          for EXPECTED in trained-model Lito-Windows Lito-Linux Lito-macOS desktop-Windows desktop-Linux desktop-macOS-apple; do
+          for EXPECTED in trained-model engine-Windows engine-Linux engine-macOS-apple desktop-Windows desktop-Linux desktop-macOS-apple; do
             if ! grep -qx "$EXPECTED" <<<"$LISTED"; then
               MISSING="$MISSING $EXPECTED"
             fi
@@ -205,29 +205,14 @@ jobs:
           github-token: ${{ github.token }}
           path: downloaded/model
 
-      - name: Download Windows executable artifact
+      - name: Download engine-only zips
         uses: actions/download-artifact@v4
         with:
-          name: Lito-Windows
+          pattern: engine-*
           run-id: ${{ steps.find-run.outputs.run-id }}
           github-token: ${{ github.token }}
-          path: downloaded/windows
-
-      - name: Download Linux executable artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: Lito-Linux
-          run-id: ${{ steps.find-run.outputs.run-id }}
-          github-token: ${{ github.token }}
-          path: downloaded/linux
-
-      - name: Download macOS executable artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: Lito-macOS
-          run-id: ${{ steps.find-run.outputs.run-id }}
-          github-token: ${{ github.token }}
-          path: downloaded/macos
+          path: downloaded/engine
+          merge-multiple: true
 
       - name: Download desktop bundles (Windows, Linux, macOS)
         uses: actions/download-artifact@v4
@@ -246,21 +231,21 @@ jobs:
           # best_model.npz + tokenizer.json are zipped inside the trained-model artifact
           unzip -o downloaded/model/model.zip -d release/
 
-          # One executable per artifact; rename so every release asset has a unique name
-          cp downloaded/windows/Lito.exe release/Lito-Windows.exe
-          cp downloaded/linux/Lito release/Lito-Linux
-          cp downloaded/macos/Lito release/Lito-macOS
+          # Engine-only zips: what the app's in-app setup downloads when
+          # it finds no engine next to itself.
+          cp downloaded/engine/LitoEngine-*.zip release/
 
           # Go desktop app bundles: each zip = the Go GUI binary + the
           # frozen LitoEngine (Python + numpy + data + trained model
           # included), so the download runs with nothing installed.
           cp downloaded/desktop/LitoDesktop-*.zip release/
 
-          # The zip as-is, so `main.py --download` (which looks for model.zip) keeps working
+          # The zip as-is: the app's version database (Download button)
+          # fetches this to install models
           cp downloaded/model/model.zip release/model.zip
 
           # Every expected file must exist and not be empty
-          for FILE in best_model.npz tokenizer.json model.zip Lito-Windows.exe Lito-Linux Lito-macOS LitoDesktop-Windows.zip LitoDesktop-Linux.zip LitoDesktop-macOS-apple.zip; do
+          for FILE in best_model.npz tokenizer.json model.zip LitoEngine-Windows.zip LitoEngine-Linux.zip LitoEngine-macOS-apple.zip LitoDesktop-Windows.zip LitoDesktop-Linux.zip LitoDesktop-macOS-apple.zip; do
             if [ ! -s "release/$FILE" ]; then
               echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
               exit 1
@@ -302,16 +287,16 @@ jobs:
             echo "|------|-------------|"
             echo "| \`best_model.npz\` | Trained model weights (best checkpoint) |"
             echo "| \`tokenizer.json\` | Tokenizer / vocabulary for the model |"
-            echo "| \`model.zip\` | The two files above bundled (what \`main.py --download\` fetches) |"
-            echo "| \`Lito-Windows.exe\` | Standalone Windows executable (terminal chat) |"
-            echo "| \`Lito-Linux\` | Standalone Linux executable |"
-            echo "| \`Lito-macOS\` | Standalone macOS executable (Apple silicon) |"
+            echo "| \`model.zip\` | The two files above bundled (what the Download button fetches) |"
+            echo "| \`LitoEngine-Windows.zip\` | The frozen AI engine alone (Windows) - what the desktop app auto-downloads during setup |"
+            echo "| \`LitoEngine-Linux.zip\` | The frozen AI engine alone (Linux) |"
+            echo "| \`LitoEngine-macOS-apple.zip\` | The frozen AI engine alone (macOS, Apple silicon) |"
             echo "| \`LitoDesktop-Windows.zip\` | **Desktop app for Windows** - the Go GUI plus the frozen LitoEngine AI engine (Python + numpy + the trained model are included), ready to unzip and run - nothing to install |"
             echo "| \`LitoDesktop-Linux.zip\` | Desktop app for Linux (same self-contained bundle) |"
             echo "| \`LitoDesktop-macOS-apple.zip\` | Desktop app for macOS, Apple silicon (same self-contained bundle) |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
             echo
-            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the trained model) which the app starts and watches automatically - unzip and double-click, nothing to install. The \`Lito\` executables are standalone terminal chat apps. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code (see \`run.sh\` / \`run.bat\`)."
+            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the trained model) which the app starts and watches automatically - unzip and double-click, nothing to install. The \`Lito\` executables are standalone terminal chat apps. Got just the GUI binary without an engine? The app offers to download and set it up on first run. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code and run \`python server.py\`."
           } > notes.md
 
       - name: Publish the release
