@@ -296,7 +296,7 @@ jobs:
             echo "| \`LitoDesktop-macOS-apple.zip\` | Desktop app for macOS, Apple silicon (same self-contained bundle) |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
             echo
-            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the trained model) which the app starts and watches automatically - unzip and double-click, nothing to install. The \`Lito\` executables are standalone terminal chat apps. Got just the GUI binary without an engine? The app offers to download and set it up on first run. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code and run \`python server.py\`."
+            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the trained model) which the app starts and watches automatically - unzip and double-click, nothing to install. Got just the GUI binary without an engine? The app offers to download and set it up on first run. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code and run \`python server.py\`."
           } > notes.md
 
       - name: Publish the release
