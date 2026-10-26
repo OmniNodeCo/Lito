@@ -27,9 +27,13 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Run feature tests (dictionary, NLP, search parsing)
         run: python tests/test_features.py
+
+      - name: Run GGUF pipeline tests (BPE tokenizer, GGUF writer, exporter)
+        run: python tests/test_gguf_pipeline.py
 
       - name: Run training from scratch
         run: |
@@ -183,7 +187,6 @@ jobs:
 
           Without the Go app the same UI runs from the engine alone:
             LitoEngine/LitoEngine            # http://127.0.0.1:5486
-          Terminal chat (needs no engine): ./Lito
           Training: click "Train" in the app (the engine re-runs itself).
           EOF
           rm -rf bundle/Lito && mkdir -p bundle/Lito

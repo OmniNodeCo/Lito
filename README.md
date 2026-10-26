@@ -4,7 +4,7 @@ An AI built **entirely from scratch** — no pretrained models, no ML frameworks
 API keys. A from-scratch numpy transformer, a from-scratch NLP pipeline, the full
 English dictionary, and live web search.
 
-**Current version: v1.2.5** — see [Versions](#versions).
+**Current version: v1.2.6** — see [Versions](#versions).
 
 ```
   ____                       _      _    ___
@@ -35,6 +35,12 @@ English dictionary, and live web search.
   state persists
 - **Chat and answer questions** using a transformer language model trained from
   scratch, a built-in knowledge base and BM25 knowledge retrieval
+- **A real GGUF chat model** (v1.2.6) — a from-scratch llama-architecture
+  transformer (~5.7M parameters) trained on ~52k instruction pairs and
+  exported to `lito-chat.gguf`: a single offline file that runs in
+  llama.cpp, LM Studio or Ollama like any open-weight model. Tokenizer,
+  trainer and GGUF writer are all implemented in this repo — see
+  [The real chat model](#the-real-chat-model-gguf-for-llamacpp--lm-studio--ollama-v126)
 - **Natural conversation** — apologies ("sorry"), acknowledgements ("ok",
   "cool"), praise, "help" and other social cues get real conversational
   replies instead of canned non-answers
@@ -340,10 +346,10 @@ the AI knows with `/learned`.
 
 Lito carries two version numbers:
 
-- **Application version** — the software itself (currently **v1.2.5**). Shown
+- **Application version** — the software itself (currently **v1.2.6**). Shown
   at startup, in `/info` and in identity answers.
 - **Knowledge version** — starts at the application version and bumps its
-  patch number with every word or term the AI learns (v1.2.5 → v1.2.6 → ...).
+  patch number with every word or term the AI learns (v1.2.6 → v1.2.7 → ...).
   Shown when the AI learns something and in `/info` / `/learned`.
 
 ### Web search (`src/search.py`)
@@ -371,17 +377,65 @@ weights and the from-scratch BPE tokenizer to `checkpoints/`. The default
 architecture is RoPE + RMSNorm + tied weights; `--classic` trains the v1.0
 layout.
 
+### The real chat model: GGUF for llama.cpp / LM Studio / Ollama (v1.2.6)
+
+Next to the tiny built-in engine, Lito ships a *real* from-scratch chat
+model — a llama-architecture transformer (RMSNorm, RoPE, SwiGLU, tied
+embeddings, ~5.7M parameters) trained on ~52,000 instruction/response
+pairs (Stanford Alpaca, formatted as ChatML) plus public-domain prose,
+then exported to **GGUF** so it runs fully offline in anything that
+speaks llama.cpp: `llama-cli`, LM Studio, Ollama, etc. No pretrained
+weights anywhere — the tokenizer (`src/bpe.py`, a GPT-2-style byte-level
+BPE), the trainer (`train_big.py`) and the GGUF writer (`src/gguf.py`)
+are all implemented in this repo, from scratch.
+
+```bash
+# 1. train (downloads the corpus itself; ~90 min on 2 CPU cores)
+pip install torch                     # plus numpy, already required
+python train_big.py                   # -> checkpoints-big/checkpoint.pt
+python train_big.py --resume --lr 1.5e-3   # optional: keep training
+# 2. export to GGUF
+python export_gguf.py                 # -> lito-chat.gguf
+# 3. chat with it, offline (small models like a repeat penalty)
+llama-cli -m lito-chat.gguf --temp 0.8 --repeat-penalty 1.1
+#    ...or drop the file into LM Studio / Ollama
+```
+
+The exported file is self-describing: llama architecture metadata, the
+full BPE vocabulary and merges, ChatML chat template, and the
+`<|im_start|>` / `<|im_end|>` control tokens — a front-end that
+understands GGUF chat templates needs zero configuration. Every release
+carries the trained `lito-chat.gguf` as an asset (see Releases).
+
+Honest expectations: at 5.7M parameters (vs billions for ChatGPT-class
+models) trained on ~5M tokens, it chats in simple, mostly-coherent
+English, follows the ChatML format, answers common instruction-style
+prompts and knows its corpus — it is a real language model, not a
+retrieval trick, but it is small. The whole pipeline scales: rerun
+`train_big.py` with a bigger `--d_model`, more `--steps` and a larger
+corpus on a GPU box and export again — nothing else changes.
+
+**Corpus licensing:** the instruction data is Stanford Alpaca
+(`tatsu-lab/stanford_alpaca`), which is intended for research purposes
+(see its `DATA_LICENSE`); the prose (tiny shakespeare) is public domain.
+`data/bigcorpus/SOURCES.md` records this where the corpus is fetched.
+
 ## Tests
 
 ```bash
-python tests/test_features.py     # 69 tests, no network required
+python tests/test_features.py       # 69 tests, no network required
+python tests/test_gguf_pipeline.py  # 11 tests: BPE, GGUF, exporter
 ```
 
-Covers the dictionary, NLP pipeline, search parsing, brain routing, the
-extension system (including numerical-gradient checks of the new RoPE /
-RMSNorm / tied-weight backward passes), the model manager, the API server,
-the desktop app sources, the frozen-engine training shim and the build
-configuration.
+The first suite covers the dictionary, NLP pipeline, search parsing,
+brain routing, the extension system (including numerical-gradient checks
+of the new RoPE / RMSNorm / tied-weight backward passes), the model
+manager, the API server, the desktop app sources, the frozen-engine
+training shim and the build configuration. The second covers the GGUF
+pipeline: GPT-2 byte-map correctness, encode/decode round-trips,
+tokenizer save/load, GGUF v3 file layout (header, metadata, tensor
+order, 32-byte alignment, f16/f32 values) and — when `torch` is
+installed — the trainer and the full checkpoint → GGUF export.
 
 ## Releases
 
@@ -409,14 +463,18 @@ makes the app fully self-installing.
 ```
 server.py             local API server + web UI backend (Ollama-style)
 desktop/              Go desktop app: main.go, go.mod, ui/ (web UI)
-train.py              training entry point
+train.py              training entry point (small in-app model)
+train_big.py          from-scratch llama-arch trainer -> checkpoint
+export_gguf.py        checkpoint -> lito-chat.gguf (llama.cpp & friends)
 src/                  all source (model, NLP, dictionary, search, chat,
-                      extensions loader, model manager / version database)
+                      extensions loader, model manager / version database,
+                      bpe.py + gguf.py for the GGUF pipeline)
 extensions/           optional skill plugins (calculator, dice, datetime)
 models/               models downloaded from the version database (created)
-data/                 offline dictionary data (see data/README.md)
+data/                 offline dictionary data (see data/README.md); the
+                      GGUF training corpus is fetched into data/bigcorpus/
 tools/                dictionary build scripts
-tests/                feature tests
+tests/                feature tests (test_features.py, test_gguf_pipeline.py)
 build.py, build.yml   PyInstaller packaging config
 .github/workflows/    CI: build.yml (train + package + Go desktop), release.yml (publish)
 ```

@@ -28,3 +28,8 @@ lito-desktop.log
 
 # Extension enable/disable state (runtime, per user)
 data/extensions.json
+
+# From-scratch GGUF model training (train_big.py) - large local artifacts
+data/bigcorpus/
+checkpoints-big/
+lito-chat.gguf

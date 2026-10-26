@@ -1058,8 +1058,8 @@ def python_cli_fully_removed():
 
 @test
 def version_is_1_2_5():
-    assert __version__ == '1.2.5', __version__
-    assert format_version() == 'v1.2.5'
+    assert __version__ == '1.2.6', __version__
+    assert format_version() == 'v1.2.6'
 
 
 # ----------------------------------------------------------------------
