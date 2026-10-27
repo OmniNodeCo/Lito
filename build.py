@@ -3,7 +3,7 @@
 Build script to create executables using PyInstaller.
 Reads configuration from build.yml.
 
-Builds every target listed in build.yml (console chat app + GUI app),
+Builds every target listed in build.yml (the frozen LitoEngine),
 falling back to the flat single-target keys for older configs.
 """
 
@@ -46,7 +46,8 @@ def load_build_config():
         'icon': None,
         'onefile': True,
         'console': True,
-        'extra_data': ['checkpoints'],
+        'extra_data': ['src', 'data', 'extensions'],
+        'extra_files': ['lito-chat.gguf'],
         'hidden_imports': ['numpy', 'json', 're'],
         'targets': [],
     }
@@ -114,7 +115,8 @@ def _build_target(config: dict, target: dict):
     console = target.get('console', config.get('console', True))
     onefile = target.get('onefile', config.get('onefile', True))
     icon = target.get('icon', config.get('icon'))
-    extra_data = target.get('extra_data', config.get('extra_data', ['checkpoints']))
+    extra_data = target.get('extra_data', config.get('extra_data', []))
+    extra_files = target.get('extra_files', config.get('extra_files', []))
     hidden_imports = target.get('hidden_imports',
                                 config.get('hidden_imports', []))
 
@@ -136,12 +138,24 @@ def _build_target(config: dict, target: dict):
     if icon and os.path.exists(str(icon)):
         cmd.extend(['--icon', str(icon)])
 
-    # Add data directories listed in extra_data (src, checkpoints, data,
-    # extensions, ...) - each is bundled with the executable
+    # Add data directories listed in extra_data (src, data, extensions,
+    # ...) - each is bundled with the executable
     for data_dir in extra_data:
         data_dir = str(data_dir)
         if os.path.exists(data_dir) and os.path.isdir(data_dir):
             cmd.extend(['--add-data', f'{data_dir}{os.pathsep}{data_dir}'])
+
+    # Single files (e.g. lito-chat.gguf) land next to the executable
+    # inside the bundle; a missing model is only a warning (the engine
+    # still runs, with the knowledge base / dictionary / search).
+    for data_file in extra_files:
+        data_file = str(data_file)
+        if os.path.isfile(data_file):
+            cmd.extend(['--add-data',
+                        f'{data_file}{os.pathsep}.'])
+        else:
+            print(f'  NOTE: {data_file} not found - the engine will '
+                  f'start without a bundled model')
 
     # Hidden imports
     for imp in hidden_imports:

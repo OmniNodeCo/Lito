@@ -19,8 +19,7 @@ English dictionary, and live web search.
 - **Desktop GUI** — **`LitoDesktop`**: a modern **Go** app, Ollama-style — it
   runs the Python AI engine (`server.py`) in the background and serves a
   sleek web UI (dark sidebar, chat bubbles, version-database browser with
-  progress downloads, background training with a live log, extension
-  toggles). It always launches, even when Python is missing: the UI then
+  progress downloads, extension toggles). It always launches, even when Python is missing: the UI then
   shows a banner explaining what to install and picks the engine up the
   moment it appears. Pure Go standard library, no external modules.
   Release bundles ship the **frozen `LitoEngine`** (Python + numpy + the
@@ -35,12 +34,14 @@ English dictionary, and live web search.
   state persists
 - **Chat and answer questions** using a transformer language model trained from
   scratch, a built-in knowledge base and BM25 knowledge retrieval
-- **A real GGUF chat model** (v1.2.6) — a from-scratch llama-architecture
-  transformer (~5.7M parameters) trained on ~52k instruction pairs and
-  exported to `lito-chat.gguf`: a single offline file that runs in
-  llama.cpp, LM Studio or Ollama like any open-weight model. Tokenizer,
-  trainer and GGUF writer are all implemented in this repo — see
-  [The real chat model](#the-real-chat-model-gguf-for-llamacpp--lm-studio--ollama-v126)
+- **A real GGUF chat model, run in-house** (v1.2.6) — a from-scratch
+  llama-architecture transformer (~6.8M parameters) trained on ~52k
+  instruction pairs and shipped as `lito-chat.gguf`. Lito chats with it
+  using its **own numpy inference engine** (`src/llama_np.py` — GGUF
+  reader, KV-cache attention, RoPE, SwiGLU, sampling, ChatML chat, all
+  from scratch), no ML frameworks involved; the very same file also runs
+  in llama.cpp, LM Studio or Ollama like any open-weight model. CI trains
+  the model for every release.
 - **Natural conversation** — apologies ("sorry"), acknowledgements ("ok",
   "cool"), praise, "help" and other social cues get real conversational
   replies instead of canned non-answers
@@ -57,9 +58,6 @@ English dictionary, and live web search.
   ("minecraft") or a statement ("i have been playing minecraft"), Lito
   searches the web, adds it to its own learned dictionary and remembers it
   offline forever after (each learned entry bumps the AI's knowledge version)
-- **A more advanced model** (v1.1.0) — rotary position embeddings (RoPE),
-  RMSNorm, tied embedding/output weights and repetition-penalized sampling,
-  all config-gated so v1.0 checkpoints keep loading unchanged
 
 ## Quick start
 
@@ -76,10 +74,8 @@ once) straight into the app folder — no installer, no terminal.
 ```
 
 Or run without a model — the dictionary, knowledge base and search all work
-without any training:
-
-```bash
-```
+without one; the server explains how to get `lito-chat.gguf` (download it
+from the version database, or train it — see below).
 
 ## Example session
 
@@ -229,26 +225,22 @@ python server.py            # http://127.0.0.1:5486
 
 `server.py` is the local API (the "ollama serve" of Lito): `/api/chat`,
 `/api/models`, `/api/releases` (version database), `/api/download`,
-`/api/extensions`, `/api/train` and friends — all localhost-only, standard
-library only.
+`/api/extensions` and friends — all localhost-only, standard library only.
 
 All of them share one feature set (built on the same `ModelManager` and
 `ExtensionManager`):
 
-- **Left sidebar** — the model list (your trained `checkpoints/` plus
-  everything downloaded), *Download…* opens the **version database**
-  browser listing all GitHub Releases with sizes and dates; ⟳ refreshes,
-  🗑 deletes, ⚙ *Train…* opens the training dialog
+- **Left sidebar** — the model list (everything downloaded, plus a
+  `lito-chat.gguf` found in the repo root), *Download…* opens the
+  **version database** browser listing all GitHub Releases that carry a
+  model, with sizes and dates; ⟳ refreshes, 🗑 deletes
 - **Chat pane** — the brain behind the API, including slash
   commands
 - **Extensions & settings** — per-extension toggles and a web-search
   toggle that take effect immediately
-- **Training** — pick hyperparameters (or the classic architecture) and
-  watch `train.py` stream its output live; the finished model is loaded
-  automatically
 
-Model loading, downloads and training all run on background threads, so
-the UI never freezes. `ModelManager` (`src/model_manager.py`) is the
+Model loading and downloads run on background threads, so the UI never
+freezes. `ModelManager` (`src/model_manager.py`) is the
 version-database layer behind it: local discovery, release listing and
 download — usable from scripts too.
 
@@ -278,22 +270,67 @@ persisted in `data/extensions.json`. Built-ins: **calculator** ("what is
 2 + 2 * 10", "15% of 200"), **dice** ("roll 2d6") and **datetime** ("what
 time is it?").
 
-### Advanced model architecture (v1.1.0)
+### The chat model: GGUF, run by its own engine (v1.2.6)
 
-`TransformerLM` gained three config-gated options (stored inside every
-checkpoint, so **old v1.0 checkpoints load unchanged**):
+The chat model is a llama-architecture transformer — RMSNorm, interleaved
+RoPE, grouped-query-shaped attention weights, SwiGLU FFN, tied
+input/output embeddings (~6.8M parameters by default) — trained **from
+random initialization** on ~52,000 instruction/response pairs (Stanford
+Alpaca, formatted as ChatML) plus public-domain prose, then exported to
+**GGUF**. No pretrained weights anywhere: the tokenizer (`src/bpe.py`, a
+GPT-2-style byte-level BPE), the trainer (`train_big.py`), the GGUF
+writer (`src/gguf.py`) and the **numpy inference engine**
+(`src/llama_np.py`) are all implemented in this repo, from scratch.
 
-| Option | Classic (v1.0) | Advanced (default) |
-|--------|----------------|--------------------|
-| `pos_encoding` | learned position embeddings | **RoPE** (rotary, per-head, extrapolates past training length) |
-| `norm` | LayerNorm | **RMSNorm** (no mean/bias, faster) |
-| `tie_weights` | untied output projection | **tied** with the token embedding |
+The engine is what the app itself uses to chat: it reads the GGUF file,
+rebuilds the network in numpy and generates with a KV cache (prefill +
+incremental decode), top-p / temperature sampling and a llama.cpp-style
+repetition penalty. It is verified against the torch trainer in the test
+suite (same checkpoint, same logits within f16 rounding). And because the
+model is a standard GGUF, the identical file runs offline in anything
+that speaks llama.cpp:
 
-Plus a CTRL-style **repetition penalty** in `generate()` (the brain uses
-1.1) so long answers don't loop. All backward passes — attention with
-RoPE rotation, RMSNorm, tied projection — are hand-written and verified
-against numerical gradients in the test suite. Train the old layout with
-`python train.py --classic`.
+```bash
+llama-cli -m lito-chat.gguf --temp 0.8 --repeat-penalty 1.1
+# ...or drop the file into LM Studio / Ollama
+```
+
+The file is self-describing: llama architecture metadata, the full BPE
+vocabulary and merges, a ChatML chat template and the `<|im_start|>` /
+`<|im_end|>` control tokens — a front-end that understands GGUF chat
+templates needs zero configuration.
+
+Honest expectations: at ~7M parameters (vs billions for ChatGPT-class
+models) trained on a few million tokens, it chats in simple,
+mostly-coherent English, follows the ChatML format, answers common
+instruction-style prompts and knows its corpus — it is a real language
+model, not a retrieval trick, but it is small. The whole pipeline
+scales: rerun `train_big.py` with a bigger `--d_model`, more `--steps`
+and a larger corpus on a GPU box and export again — nothing else
+changes.
+
+### Training the model (`train_big.py` + `export_gguf.py`)
+
+```bash
+# 1. train (downloads the corpus itself; ~90 min for 1200 steps on 2 CPU cores)
+pip install torch                     # plus numpy, already required
+python train_big.py                   # -> checkpoints-big/checkpoint.pt
+python train_big.py --resume --lr 1.5e-3   # optional: keep training
+# 2. export to GGUF
+python export_gguf.py                 # -> lito-chat.gguf
+# 3. the app picks it up from the repo root automatically (or drop the
+#    file into models/<name>/ and switch to it from the sidebar)
+```
+
+CI runs exactly this for every release: `build.yml` trains a fresh
+model, verifies it loads and chats through the numpy engine, bundles it
+into the frozen engine and attaches `lito-chat.gguf` to the release (see
+[Releases](#releases)).
+
+**Corpus licensing:** the instruction data is Stanford Alpaca
+(`tatsu-lab/stanford_alpaca`), which is intended for research purposes
+(see its `DATA_LICENSE`); the prose (tiny shakespeare) is public domain.
+`data/bigcorpus/SOURCES.md` records this where the corpus is fetched.
 
 ### Complex sentence understanding (`src/nlp.py`)
 
@@ -364,90 +401,37 @@ timeouts, and after a network failure the searcher cools down for 60 seconds
 so the chat never stalls when offline. When the web is unreachable the AI
 says so honestly instead of inventing an answer.
 
-### Training (`train.py`)
-
-```bash
-python train.py --epochs 30 --d_model 128 --n_layers 4   # advanced arch (default)
-python train.py --classic ...                            # v1.0 architecture
-```
-
-Trains the from-scratch transformer (numpy autograd engine in `src/tensor.py`,
-layers in `src/layers.py`) on the built-in corpus in `src/dataset.py`, saving
-weights and the from-scratch BPE tokenizer to `checkpoints/`. The default
-architecture is RoPE + RMSNorm + tied weights; `--classic` trains the v1.0
-layout.
-
-### The real chat model: GGUF for llama.cpp / LM Studio / Ollama (v1.2.6)
-
-Next to the tiny built-in engine, Lito ships a *real* from-scratch chat
-model — a llama-architecture transformer (RMSNorm, RoPE, SwiGLU, tied
-embeddings, ~5.7M parameters) trained on ~52,000 instruction/response
-pairs (Stanford Alpaca, formatted as ChatML) plus public-domain prose,
-then exported to **GGUF** so it runs fully offline in anything that
-speaks llama.cpp: `llama-cli`, LM Studio, Ollama, etc. No pretrained
-weights anywhere — the tokenizer (`src/bpe.py`, a GPT-2-style byte-level
-BPE), the trainer (`train_big.py`) and the GGUF writer (`src/gguf.py`)
-are all implemented in this repo, from scratch.
-
-```bash
-# 1. train (downloads the corpus itself; ~90 min on 2 CPU cores)
-pip install torch                     # plus numpy, already required
-python train_big.py                   # -> checkpoints-big/checkpoint.pt
-python train_big.py --resume --lr 1.5e-3   # optional: keep training
-# 2. export to GGUF
-python export_gguf.py                 # -> lito-chat.gguf
-# 3. chat with it, offline (small models like a repeat penalty)
-llama-cli -m lito-chat.gguf --temp 0.8 --repeat-penalty 1.1
-#    ...or drop the file into LM Studio / Ollama
-```
-
-The exported file is self-describing: llama architecture metadata, the
-full BPE vocabulary and merges, ChatML chat template, and the
-`<|im_start|>` / `<|im_end|>` control tokens — a front-end that
-understands GGUF chat templates needs zero configuration. Every release
-carries the trained `lito-chat.gguf` as an asset (see Releases).
-
-Honest expectations: at 5.7M parameters (vs billions for ChatGPT-class
-models) trained on ~5M tokens, it chats in simple, mostly-coherent
-English, follows the ChatML format, answers common instruction-style
-prompts and knows its corpus — it is a real language model, not a
-retrieval trick, but it is small. The whole pipeline scales: rerun
-`train_big.py` with a bigger `--d_model`, more `--steps` and a larger
-corpus on a GPU box and export again — nothing else changes.
-
-**Corpus licensing:** the instruction data is Stanford Alpaca
-(`tatsu-lab/stanford_alpaca`), which is intended for research purposes
-(see its `DATA_LICENSE`); the prose (tiny shakespeare) is public domain.
-`data/bigcorpus/SOURCES.md` records this where the corpus is fetched.
-
 ## Tests
 
 ```bash
-python tests/test_features.py       # 69 tests, no network required
-python tests/test_gguf_pipeline.py  # 11 tests: BPE, GGUF, exporter
+python tests/test_features.py       # 63 tests, no network required
+python tests/test_gguf_pipeline.py  # 16 tests: BPE, GGUF, engine, exporter
 ```
 
 The first suite covers the dictionary, NLP pipeline, search parsing,
-brain routing, the extension system (including numerical-gradient checks
-of the new RoPE / RMSNorm / tied-weight backward passes), the model
-manager, the API server, the desktop app sources, the frozen-engine
-training shim and the build configuration. The second covers the GGUF
-pipeline: GPT-2 byte-map correctness, encode/decode round-trips,
-tokenizer save/load, GGUF v3 file layout (header, metadata, tensor
-order, 32-byte alignment, f16/f32 values) and — when `torch` is
-installed — the trainer and the full checkpoint → GGUF export.
+brain routing, the extension system, the GGUF model manager, the API
+server, the desktop app sources and the build configuration. The second
+covers the whole model pipeline: GPT-2 byte-map correctness, encode/
+decode round-trips, tokenizer save/load, GGUF v3 file layout (header,
+metadata, tensor order, 32-byte alignment, f16/f32 values), the numpy
+**inference engine** (loads a synthetic GGUF, chats with clean ChatML
+marker stripping, KV-cache generation matches full recompute exactly,
+seeded sampling is deterministic) and — when `torch` is installed — the
+trainer, the full checkpoint → GGUF export, and an engine-vs-torch
+logits equivalence check.
 
 ## Releases
 
 Two GitHub Actions workflows handle packaging and publishing:
 
 - **Build** (`.github/workflows/build.yml`) — on every push to main it runs
-  the tests, trains a fresh model, packages `best_model.npz` +
-  `tokenizer.json`, then builds per platform (Windows, Linux, macOS Apple
-  silicon): the frozen **`LitoEngine`** (Python + numpy + data + model
-  inside) and the **Go desktop app**, assembling the self-contained
-  `LitoDesktop-*.zip` bundles plus the engine-only zips the in-app setup
-  downloads. It also keeps the `latest-model` release up to date.
+  the tests, **trains a fresh `lito-chat.gguf` from scratch**, verifies it
+  loads and chats through the numpy engine, then builds per platform
+  (Windows, Linux, macOS Apple silicon): the frozen **`LitoEngine`**
+  (Python + numpy + data + the GGUF model inside) and the **Go desktop
+  app**, assembling the self-contained `LitoDesktop-*.zip` bundles plus
+  the engine-only zips the in-app setup downloads. It also keeps the
+  `latest-model` release up to date.
 - **Release** (`.github/workflows/release.yml`) — publishes a versioned
   release from a green build run of the exact commit being released,
   waiting for a concurrent build when needed. Trigger it from the Actions
@@ -463,16 +447,17 @@ makes the app fully self-installing.
 ```
 server.py             local API server + web UI backend (Ollama-style)
 desktop/              Go desktop app: main.go, go.mod, ui/ (web UI)
-train.py              training entry point (small in-app model)
 train_big.py          from-scratch llama-arch trainer -> checkpoint
 export_gguf.py        checkpoint -> lito-chat.gguf (llama.cpp & friends)
-src/                  all source (model, NLP, dictionary, search, chat,
-                      extensions loader, model manager / version database,
-                      bpe.py + gguf.py for the GGUF pipeline)
+src/                  all source: NLP, dictionary, search, brain, extension
+                      loader, model manager / version database, bpe.py +
+                      gguf.py (GGUF read/write) and llama_np.py (the numpy
+                      inference engine that runs lito-chat.gguf)
 extensions/           optional skill plugins (calculator, dice, datetime)
 models/               models downloaded from the version database (created)
 data/                 offline dictionary data (see data/README.md); the
                       GGUF training corpus is fetched into data/bigcorpus/
+checkpoints-big/      training output (created by train_big.py)
 tools/                dictionary build scripts
 tests/                feature tests (test_features.py, test_gguf_pipeline.py)
 build.py, build.yml   PyInstaller packaging config
@@ -484,4 +469,3 @@ build.py, build.yml   PyInstaller packaging config
 - WordNet 3.0 data: Princeton University license (see `data/WORDNET_LICENSE`)
 - English word list: public domain ([dwyl/english-words](https://github.com/dwyl/english-words))
 - Frequency data: MIT ([pyspellchecker](https://github.com/barrust/pyspellchecker))
-er](https://github.com/barrust/pyspellchecker))

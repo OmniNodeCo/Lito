@@ -25,8 +25,6 @@ from src.nlp import (Analyzer, BM25Index, Lemmatizer, negated_scope,
 from src.search import WebSearch, strip_html
 from src.brain import AIBrain
 from src.extensions import ExtensionManager
-from src.model import TransformerLM
-from src.loss import cross_entropy_loss
 from src.version import __version__, bump_patch, bump_minor, format_version, parse_version
 
 # ----------------------------------------------------------------------
@@ -779,149 +777,21 @@ def brain_uses_extensions_and_respects_toggles():
 
 
 # ----------------------------------------------------------------------
-# Advanced model architecture (v1.1.0: RoPE + RMSNorm + tied weights)
-# ----------------------------------------------------------------------
-
-@test
-def model_advanced_architecture_builds():
-    np.random.seed(0)
-    model = TransformerLM(vocab_size=32, d_model=16, n_heads=4, n_layers=2,
-                          d_ff=32, max_seq_len=24, dropout=0.0,
-                          pos_encoding='rope', norm='rms', tie_weights=True)
-    # weight tying: one shared tensor, listed once
-    assert model.output_proj.weight is model.token_embedding.weight
-    params = model.parameters()
-    assert len(params) == len({id(p) for p in params}), 'params must be unique'
-    # RoPE models have no position embedding table
-    assert model.position_embedding is None
-    ids = np.array([[3, 7, 11, 2, 9]])
-    logits = model.forward(ids)
-    assert logits.data.shape == (1, 5, 32)
-    # generation with a repetition penalty runs
-    out = model.generate(ids, max_new_tokens=4, temperature=0.9,
-                         top_k=10, top_p=0.9, repetition_penalty=1.2)
-    assert out.shape == (9,)
-
-
-@test
-def model_gradients_are_sane():
-    """Spot-check backprop through the advanced architecture numerically."""
-    np.random.seed(1)
-    model = TransformerLM(vocab_size=24, d_model=16, n_heads=4, n_layers=2,
-                          d_ff=32, max_seq_len=16, dropout=0.0,
-                          pos_encoding='rope', norm='rms', tie_weights=True)
-    ids = np.array([[2, 5, 9, 1]])
-    tgt = np.array([[5, 9, 1, 2]])
-
-    def loss_at():
-        return cross_entropy_loss(model.forward(ids), tgt)
-
-    loss = loss_at()
-    loss.backward()
-    # no NaN/inf anywhere
-    for p in model.parameters():
-        assert np.all(np.isfinite(p.grad)), 'non-finite gradients'
-    # analytic vs numeric gradients agree (small tolerance: the loss uses
-    # tiny epsilon constants, see classic model - same ballpark there)
-    h = 1e-5
-    for p, indices in ((model.token_embedding.weight, [(0, 0), (1, 2)]),
-                       (model.blocks[0].ln1.gamma, [(0, 0), (0, 2)])):
-        for idx in indices:
-            old = p.data[idx]
-            p.data[idx] = old + h
-            lp = float(np.mean(loss_at().data))
-            p.data[idx] = old - h
-            lm = float(np.mean(loss_at().data))
-            p.data[idx] = old
-            num = (lp - lm) / (2 * h)
-            ana = p.grad[idx]
-            rel = abs(num - ana) / (abs(num) + abs(ana) + 1e-9)
-            assert rel < 0.05, f'{idx}: num={num} ana={ana} rel={rel}'
-
-
-@test
-def model_save_load_roundtrip_and_compat():
-    with tempfile.TemporaryDirectory() as tmp:
-        np.random.seed(2)
-        model = TransformerLM(vocab_size=24, d_model=16, n_heads=4,
-                              n_layers=2, d_ff=32, max_seq_len=16,
-                              dropout=0.0, pos_encoding='rope',
-                              norm='rms', tie_weights=True)
-        path = os.path.join(tmp, 'advanced.npz')
-        model.save(path)
-        cfg = json.loads(str(np.load(path, allow_pickle=True)['config']))
-        assert cfg['pos_encoding'] == 'rope', cfg
-        assert cfg['norm'] == 'rms' and cfg['tie_weights'] is True, cfg
-        m2 = TransformerLM(vocab_size=24, d_model=16, n_heads=4,
-                           n_layers=2, d_ff=32, max_seq_len=16,
-                           dropout=0.0, pos_encoding='rope',
-                           norm='rms', tie_weights=True)
-        m2.load(path)
-        for a, b in zip(model.parameters(), m2.parameters()):
-            assert a.data.shape == b.data.shape
-            assert np.allclose(a.data, b.data), 'weights must roundtrip'
-        # classic model (v1.0 layout) still builds: old checkpoints load
-        m3 = TransformerLM(vocab_size=24, d_model=16, n_heads=4,
-                           n_layers=2, d_ff=32, max_seq_len=16, dropout=0.0)
-        assert m3.position_embedding is not None
-        assert m3.output_proj.weight is not m3.token_embedding.weight
-
-
-@test
-def advanced_model_learns_in_tiny_training():
-    """Two epochs on a tiny corpus: loss must decrease, no NaN."""
-    import src.dataset as dataset_mod
-    from src.tokenizer import BPETokenizer
-    from src.trainer import Trainer
-
-    tiny_corpus = [
-        'the sun is bright and warm',
-        'the moon is quiet and pale',
-        'a small model can still learn',
-        'lito learns new words every day',
-        'the sky is blue above the sea',
-        'machines help people solve problems',
-    ] * 4
-    original = dataset_mod.TrainingData.get_training_corpus
-    dataset_mod.TrainingData.get_training_corpus = staticmethod(
-        lambda: tiny_corpus)
-    try:
-        np.random.seed(3)
-        tokenizer = BPETokenizer(vocab_size=96)
-        tokenizer.build_vocab(tiny_corpus)
-        model = TransformerLM(vocab_size=tokenizer.vocab_size, d_model=24,
-                              n_heads=3, n_layers=2, d_ff=48,
-                              max_seq_len=24, dropout=0.0,
-                              pos_encoding='rope', norm='rms',
-                              tie_weights=True)
-        with tempfile.TemporaryDirectory() as tmp:
-            trainer = Trainer(model=model, tokenizer=tokenizer, lr=3e-3,
-                              save_dir=os.path.join(tmp, 'ckpt'))
-            trainer.train(epochs=2, batch_size=2, seq_len=12,
-                          log_interval=1, save_interval=100,
-                          warmup_steps=2)
-            losses = list(trainer.train_losses)
-        assert len(losses) == 2, losses
-        assert losses, 'no losses recorded'
-        assert all(np.isfinite(l) for l in losses), losses
-        assert losses[-1] < losses[0], f'loss did not decrease: {losses}'
-    finally:
-        dataset_mod.TrainingData.get_training_corpus = original
-
-
-# ----------------------------------------------------------------------
 # Model manager / version database (v1.1.0)
 # ----------------------------------------------------------------------
 
 @test
 def model_manager_local_models_and_releases():
-    import zipfile as zipfile_mod
+    import shutil
     import src.model_manager as model_manager_mod
-    from src.model_manager import ModelManager
+    from src.model_manager import ModelManager, MODEL_FILENAME
+    from src.gguf import GGUFWriter
+    from src.bpe import ByteBPE
+    import numpy as np
 
     with tempfile.TemporaryDirectory() as tmp:
-        # Point the module's ROOT at tmp so the checkpoints/ listing is
-        # hermetic (the real repo may have a trained checkpoints/ dir).
+        # Point the module's ROOT at tmp so the exported-model listing is
+        # hermetic (the real repo may have a lito-chat.gguf export).
         original_root = model_manager_mod._ROOT
         model_manager_mod._ROOT = tmp
         try:
@@ -929,12 +799,54 @@ def model_manager_local_models_and_releases():
             mm = ModelManager(models_dir=models_dir, repo='OmniNodeCo/Lito')
             assert mm.local_models() == []
 
-            # fake release list
+            # a synthetic GGUF stands in for a trained model
+            tok = ByteBPE(vocab_size=300)
+            tok.train(['hello world hello there'] * 6, verbose=False)
+            w = GGUFWriter('llama', 'test-model')
+            w.add_uint32('llama.context_length', 32)
+            w.add_uint32('llama.embedding_length', 16)
+            w.add_uint32('llama.block_count', 1)
+            w.add_uint32('llama.feed_forward_length', 32)
+            w.add_uint32('llama.attention.head_count', 2)
+            w.add_uint32('llama.attention.head_count_kv', 2)
+            w.add_float32('llama.attention.layer_norm_rms_epsilon', 1e-5)
+            w.add_float32('llama.rope.freq_base', 10000.0)
+            w.add_uint32('llama.vocab_size', tok.vocab_size)
+            w.add_string('tokenizer.ggml.model', 'gpt2')
+            w.add_strings('tokenizer.ggml.tokens', tok.vocab)
+            w.add_int32s('tokenizer.ggml.token_type',
+                         [3 if i in tok.id_to_special else 1
+                          for i in range(tok.vocab_size)])
+            w.add_strings('tokenizer.ggml.merges',
+                          [a + ' ' + b for a, b in tok.merges])
+            w.add_uint32('tokenizer.ggml.eot_token_id',
+                         tok.special_ids['<|im_end|>'])
+            w.add_tensor('token_embd.weight',
+                         np.zeros((tok.vocab_size, 16), dtype=np.float32), 1)
+            for t in ('attn_norm.weight', 'attn_q.weight', 'attn_k.weight',
+                      'attn_v.weight', 'attn_output.weight', 'ffn_norm.weight',
+                      'ffn_gate.weight', 'ffn_up.weight', 'ffn_down.weight'):
+                if t.endswith('norm.weight'):
+                    # 1-D norms, F32 like every converter writes them
+                    arr = np.ones(16, dtype=np.float32)
+                elif t == 'ffn_down.weight':
+                    arr = np.ones((16, 32), dtype=np.float32)
+                elif t.startswith('ffn_'):
+                    arr = np.ones((32, 16), dtype=np.float32)
+                else:
+                    arr = np.ones((16, 16), dtype=np.float32)
+                w.add_tensor('blk.0.' + t, arr,
+                             0 if t.endswith('norm.weight') else 1)
+            w.add_tensor('output_norm.weight', np.ones(16, dtype=np.float32), 0)
+            gguf_path = os.path.join(tmp, 'synthetic.gguf')
+            w.write(gguf_path)
+
+            # fake release list (the model asset is the GGUF itself)
             fake = [{
                 'tag_name': 'v9.9.9', 'name': 'Lito v9.9.9', 'draft': False,
                 'published_at': '2026-10-14T00:00:00Z', 'body': 'notes',
-                'assets': [{'name': 'model.zip', 'size': 4321,
-                            'browser_download_url': 'https://example.com/m.zip'}]},
+                'assets': [{'name': 'lito-chat.gguf', 'size': 4321,
+                            'browser_download_url': 'https://example.com/model.gguf'}]},
                 {'tag_name': 'v9.9.10', 'name': 'no-assets', 'draft': False,
                  'published_at': '2026-10-15T00:00:00Z', 'body': '',
                  'assets': []}]
@@ -943,23 +855,23 @@ def model_manager_local_models_and_releases():
             assert len(releases) == 1 and releases[0].tag == 'v9.9.9', releases
             assert releases[0].asset_size == 4321
 
-            # mocked download: write a zip with the model files
+            # mocked download: copy the synthetic GGUF into place
             def fake_dl(url, dest, progress_cb=None, headers=None):
-                with zipfile_mod.ZipFile(dest, 'w') as zf:
-                    zf.writestr('best_model.npz', 'weights')
-                    zf.writestr('tokenizer.json', 'tokens')
+                shutil.copyfile(gguf_path, dest)
                 if progress_cb:
                     progress_cb(2, 2)
                 return dest
             mm._download_file = fake_dl
             info = mm.download(releases[0])
-            assert os.path.exists(os.path.join(models_dir, 'v9.9.9',
-                                               'best_model.npz'))
+            downloaded = os.path.join(models_dir, 'v9.9.9', MODEL_FILENAME)
+            assert os.path.exists(downloaded)
             assert info.version == 'v9.9.9' and info.source == 'local'
+            assert info.vocab_size == str(tok.vocab_size), info
 
             # listing + guards
             models = {m.name: m for m in mm.local_models()}
             assert 'v9.9.9' in models
+            assert mm.model_path(models['v9.9.9']) == downloaded
             assert mm.delete('v9.9.9') is True
             assert not os.path.exists(os.path.join(models_dir, 'v9.9.9'))
             assert mm.delete('../evil') is False, 'path traversal must be refused'
@@ -969,18 +881,8 @@ def model_manager_local_models_and_releases():
 
 
 # ----------------------------------------------------------------------
-# GUI + train flags (v1.1.0)
+# Build config + removed-features guards
 # ----------------------------------------------------------------------
-
-@test
-def train_script_supports_classic_flag():
-    import subprocess as sp_mod
-    result = sp_mod.run(
-        [sys.executable, 'train.py', '--help'], capture_output=True,
-        text=True, cwd=REPO_ROOT, timeout=120)
-    assert result.returncode == 0, result.stderr
-    assert '--classic' in result.stdout
-    assert 'rope' in (result.stdout + result.stderr).lower() or True
 
 
 @test
@@ -1002,24 +904,11 @@ def build_config_defines_engine_target():
     assert targets['LitoEngine']['console'] is True
     assert targets['LitoEngine']['onefile'] is False
     assert 'desktop/ui' in targets['LitoEngine']['extra_data']
-    # data dirs shipped with the engine
+    # data dirs shipped with the engine, plus the GGUF model itself
     assert 'extensions' in config['extra_data']
     assert 'data' in config['extra_data']
-
-
-@test
-def server_supports_frozen_engine_training():
-    """A PyInstaller-packaged engine has no python/train.py on disk; the
-    server re-runs its own executable as the trainer via --lito-train."""
-    src = open(os.path.join(REPO_ROOT, 'server.py'), encoding='utf-8').read()
-    assert '--lito-train' in src
-    assert "getattr(sys, 'frozen', False)" in src
-    # and the shim actually runs train.py's CLI
-    import subprocess as sp_mod
-    r = sp_mod.run([sys.executable, 'server.py', '--lito-train', '--help'],
-                   capture_output=True, text=True, cwd=REPO_ROOT, timeout=120)
-    assert r.returncode == 0, r.stderr
-    assert '--epochs' in r.stdout
+    assert 'lito-chat.gguf' in config['extra_files'], config['extra_files']
+    assert 'lito-chat.gguf' in targets['LitoEngine']['extra_files']
 
 
 @test
@@ -1057,7 +946,7 @@ def python_cli_fully_removed():
 
 
 @test
-def version_is_1_2_5():
+def version_matches_src():
     assert __version__ == '1.2.6', __version__
     assert format_version() == 'v1.2.6'
 
@@ -1081,8 +970,8 @@ def server_api_endpoints():
         state.mm._fetch_json = lambda url, headers=None: [{
             'tag_name': 'v9.9.9', 'name': 'Lito v9.9.9', 'draft': False,
             'published_at': '2026-10-14T00:00:00Z', 'body': 'notes',
-            'assets': [{'name': 'model.zip', 'size': 10,
-                        'browser_download_url': 'https://example.com/m.zip'}]}]
+            'assets': [{'name': 'lito-chat.gguf', 'size': 10,
+                        'browser_download_url': 'https://example.com/model.gguf'}]}]
         state.start_background_load()
         httpd = ThreadingHTTPServer(('127.0.0.1', 0), make_handler(state))
         httpd.daemon_threads = True
@@ -1137,8 +1026,9 @@ def server_api_endpoints():
             assert r['search'] is False, r
             _, r = req('POST', '/api/reset')
             assert r.get('ok'), r
+            # training endpoints are gone (GGUF-only: CI trains models)
             _, r = req('GET', '/api/train/status?since=0')
-            assert r['running'] is False and r['lines'] == [], r
+            assert 'error' in r, r
             # the static UI is served
             conn = http.client.HTTPConnection('127.0.0.1', port, timeout=60)
             conn.request('GET', '/')

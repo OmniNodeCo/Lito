@@ -1,30 +1,27 @@
 """
 Model manager + version database for Lito.
 
-- Local models live in `models/<name>/` (each holding best_model.npz,
-  tokenizer.json and an info.json written after download/training).
+- Local models live in `models/<name>/` (each holding a `lito-chat.gguf`
+  and an info.json written after download), plus a `lito-chat.gguf`
+  exported next to the code by `python export_gguf.py`.
 - The *version database* is the repository's GitHub Releases: the
-  "Release Lito" workflow publishes a model.zip for every version.
-- `checkpoints/` (created by `python train.py`) is listed as a local
-  model too, so freshly trained models show up next to downloaded ones.
+  "Build Lito" workflow trains and publishes a `lito-chat.gguf` for
+  every version.
 
 Used by the API server / desktop app but has no UI dependencies itself.
 """
 
-import io
 import json
 import os
 import re
 import shutil
-import tempfile
-import urllib.error
 import urllib.request
-import zipfile
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 DEFAULT_REPO = 'OmniNodeCo/Lito'
 GITHUB_API = 'https://api.github.com'
+MODEL_FILENAME = 'lito-chat.gguf'
 _USER_AGENT = 'Lito-ModelManager'
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -83,51 +80,71 @@ class ModelManager:
         except (OSError, ValueError):
             return {}
 
-    def _describe_npz(self, model_dir: str) -> dict:
-        """Read the config stored inside best_model.npz (cheap metadata)."""
-        for fname in ('best_model.npz', 'final_model.npz'):
-            path = os.path.join(model_dir, fname)
-            if not os.path.exists(path):
-                continue
-            try:
-                import numpy as np
-                loaded = np.load(path, allow_pickle=True)
-                if 'config' in loaded:
-                    return json.loads(str(loaded['config']))
-            except Exception:
-                return {}
-        return {}
+    def _describe_gguf(self, model_dir: str) -> dict:
+        """Read the metadata inside a lito-chat.gguf (cheap, no weights)."""
+        path = os.path.join(model_dir, MODEL_FILENAME)
+        if not os.path.exists(path):
+            return {}
+        try:
+            from .gguf import read_gguf_metadata
+            meta, shapes = read_gguf_metadata(path)
+            params = 1
+            total = 0
+            for ne, _t in shapes.values():
+                n = 1
+                for d in ne:
+                    n *= d
+                total += n
+            return {
+                'params': total,
+                'vocab_size': meta.get('llama.vocab_size',
+                                       len(meta.get('tokenizer.ggml.tokens',
+                                                    []))),
+                'model_name': meta.get('general.name', ''),
+                'context_length': meta.get('llama.context_length', ''),
+                'arch': 'llama',
+            }
+        except Exception:
+            return {}
 
     def _model_info(self, name: str, model_dir: str, source: str) -> ModelInfo:
         info = self._read_info(model_dir)
-        config = self._describe_npz(model_dir) if not info else {}
+        config = self._describe_gguf(model_dir) if not info else {}
+        params = info.get('params', config.get('params', ''))
+        if isinstance(params, int):
+            params = f'{params:,}'
         return ModelInfo(
             name=name,
             path=model_dir,
             source=info.get('source', source),
             version=info.get('version', ''),
-            params=info.get('params', ''),
+            params=str(params),
             vocab_size=str(info.get('vocab_size', config.get('vocab_size', ''))),
             trained_at=info.get('trained_at', info.get('downloaded_at', '')),
         )
 
     def local_models(self) -> List[ModelInfo]:
-        """All usable models on disk (downloaded + trained)."""
+        """All usable models on disk (downloaded + locally exported)."""
         models: List[ModelInfo] = []
         if os.path.isdir(self.models_dir):
             for name in sorted(os.listdir(self.models_dir)):
                 d = os.path.join(self.models_dir, name)
-                if os.path.isdir(d) and (
-                        os.path.exists(os.path.join(d, 'best_model.npz'))
-                        or os.path.exists(os.path.join(d, 'final_model.npz'))):
+                if os.path.isdir(d) and os.path.isfile(
+                        os.path.join(d, MODEL_FILENAME)):
                     models.append(self._model_info(name, d, 'local'))
-        # The training output directory (train.py) is a model too.
-        ckpt = os.path.join(_ROOT, 'checkpoints')
-        if os.path.isdir(ckpt) and (
-                os.path.exists(os.path.join(ckpt, 'best_model.npz'))
-                or os.path.exists(os.path.join(ckpt, 'final_model.npz'))):
-            models.append(self._model_info('checkpoints', ckpt, 'trained'))
+        # A model exported next to the code (train_big.py + export_gguf.py)
+        # counts as a locally trained model.
+        exported = os.path.join(_ROOT, MODEL_FILENAME)
+        if os.path.isfile(exported):
+            models.append(self._model_info('lito-chat (exported)',
+                                           _ROOT, 'trained'))
         return models
+
+    def model_path(self, info: ModelInfo) -> str:
+        """The GGUF file behind a ModelInfo."""
+        if os.path.isfile(os.path.join(info.path, MODEL_FILENAME)):
+            return os.path.join(info.path, MODEL_FILENAME)
+        return info.path  # already a file path
 
     def write_info(self, model_dir: str, **fields) -> None:
         info = self._read_info(model_dir)
@@ -188,7 +205,7 @@ class ModelManager:
         return dest
 
     def available_releases(self) -> List[ReleaseInfo]:
-        """List the version database (GitHub releases with a model asset)."""
+        """List the version database (GitHub releases with a GGUF model)."""
         url = f'{GITHUB_API}/repos/{self.repo}/releases?per_page=30'
         data = self._fetch_json(url)
         releases = []
@@ -197,13 +214,13 @@ class ModelManager:
                 continue
             asset = None
             for a in rel.get('assets', []):
-                if a.get('name') == 'model.zip':
+                if a.get('name') == MODEL_FILENAME:
                     asset = a
                     break
             if asset is None:
-                zips = [a for a in rel.get('assets', []) or []
-                        if str(a.get('name', '')).endswith('.zip')]
-                asset = zips[0] if zips else None
+                ggufs = [a for a in rel.get('assets', []) or []
+                         if str(a.get('name', '')).endswith('.gguf')]
+                asset = ggufs[0] if ggufs else None
             if asset is None:
                 continue
             body = (rel.get('body') or '').strip().splitlines()
@@ -220,35 +237,22 @@ class ModelManager:
 
     def download(self, release: ReleaseInfo,
                  progress_cb: Optional[Callable[[int, int], None]] = None) -> ModelInfo:
-        """Download a release's model.zip into models/<tag>/."""
+        """Download a release's lito-chat.gguf into models/<tag>/."""
         tag = release.tag or 'model'
         target = os.path.join(self.models_dir, tag)
-        os.makedirs(self.models_dir, exist_ok=True)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            zip_path = os.path.join(tmp, 'model.zip')
-            self._download_file(release.asset_url, zip_path, progress_cb)
-            os.makedirs(target, exist_ok=True)
-            with zipfile.ZipFile(zip_path) as zf:
-                for member in zf.namelist():
-                    if member.endswith('/'):
-                        continue
-                    out_name = os.path.basename(member)
-                    if not out_name:
-                        continue
-                    with zf.open(member) as src, \
-                            open(os.path.join(target, out_name), 'wb') as dst:
-                        shutil.copyfileobj(src, dst)
+        os.makedirs(target, exist_ok=True)
+        dest = os.path.join(target, MODEL_FILENAME)
+        self._download_file(release.asset_url, dest + '.part', progress_cb)
+        os.replace(dest + '.part', dest)
 
         info = {
             'source': 'local',
             'version': tag,
             'downloaded_at': release.published_at,
         }
-        config = self._describe_npz(target)
+        config = self._describe_gguf(target)
         if config:
             info['vocab_size'] = config.get('vocab_size', '')
-            info['arch'] = (f"{config.get('pos_encoding', 'learned')}/"
-                            f"{config.get('norm', 'layer')}")
+            info['arch'] = config.get('arch', 'llama')
         self.write_info(target, **info)
         return self._model_info(tag, target, 'local')

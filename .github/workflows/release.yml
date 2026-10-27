@@ -6,11 +6,12 @@ name: Release Lito
 #   1. Find the green 'Build Lito' run of the commit being released.
 #      If a build of that commit is still running (e.g. the one triggered
 #      by this very tag push), wait for it to finish.
-#   2. Download that run's artifacts: best_model.npz + tokenizer.json
-#      (from the 'trained-model' artifact), the engine-only zips (what
-#      the app's in-app setup auto-downloads) and the self-contained Go
-#      desktop app bundles (each zip = the Go GUI binary + the frozen
-#      LitoEngine, with Python + numpy + the trained model inside).
+#   2. Download that run's artifacts: lito-chat.gguf (the from-scratch
+#      chat model trained by CI, from the 'trained-model' artifact), the
+#      engine-only zips (what the app's in-app setup auto-downloads) and
+#      the self-contained Go desktop app bundles (each zip = the Go GUI
+#      binary + the frozen LitoEngine, with Python + numpy + the GGUF
+#      model inside).
 #   3. Publish everything as a GitHub Release, tagged with the app version
 #      of the commit that was built (e.g. v1.2.0).
 #
@@ -92,7 +93,7 @@ jobs:
           # the same commit (e.g. the one triggered by this very tag push).
           if [ -z "$GREEN" ]; then
             echo "  No green run of this commit yet - waiting for the running build..."
-            for _ in $(seq 1 90); do    # up to 45 minutes
+            for _ in $(seq 1 240); do   # up to 2 hours (CI trains the model)
               sleep 30
               MATCHED="$(fetch_runs)"
               GREEN="$(pick_success <<<"$MATCHED")"
@@ -197,7 +198,7 @@ jobs:
             exit 1
           fi
 
-      - name: Download model + tokenizer artifact
+      - name: Download the GGUF model artifact
         uses: actions/download-artifact@v4
         with:
           name: trained-model
@@ -228,33 +229,35 @@ jobs:
         run: |
           mkdir -p release
 
-          # best_model.npz + tokenizer.json are zipped inside the trained-model artifact
-          unzip -o downloaded/model/model.zip -d release/
+          # The from-scratch chat model trained by the CI build
+          cp downloaded/model/lito-chat.gguf release/
 
           # Engine-only zips: what the app's in-app setup downloads when
           # it finds no engine next to itself.
           cp downloaded/engine/LitoEngine-*.zip release/
 
           # Go desktop app bundles: each zip = the Go GUI binary + the
-          # frozen LitoEngine (Python + numpy + data + trained model
+          # frozen LitoEngine (Python + numpy + data + the GGUF model
           # included), so the download runs with nothing installed.
           cp downloaded/desktop/LitoDesktop-*.zip release/
 
-          # The zip as-is: the app's version database (Download button)
-          # fetches this to install models
-          cp downloaded/model/model.zip release/model.zip
-
           # Every expected file must exist and not be empty
-          for FILE in best_model.npz tokenizer.json model.zip LitoEngine-Windows.zip LitoEngine-Linux.zip LitoEngine-macOS-apple.zip LitoDesktop-Windows.zip LitoDesktop-Linux.zip LitoDesktop-macOS-apple.zip; do
+          for FILE in lito-chat.gguf LitoEngine-Windows.zip LitoEngine-Linux.zip LitoEngine-macOS-apple.zip LitoDesktop-Windows.zip LitoDesktop-Linux.zip LitoDesktop-macOS-apple.zip; do
             if [ ! -s "release/$FILE" ]; then
               echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
               exit 1
             fi
           done
 
-          # Sanity checks: an .npz is a zip archive; tokenizer.json must be valid JSON
-          unzip -t release/best_model.npz >/dev/null
-          python3 -m json.tool release/tokenizer.json >/dev/null
+          # Sanity check: a GGUF v3 file starts with the 'GGUF' magic
+          python3 - <<'PYEOF'
+          import struct
+          with open('release/lito-chat.gguf', 'rb') as f:
+              magic, version, n_tensors, n_kv = struct.unpack('<IIQQ', f.read(24))
+          assert magic == 0x46554747, 'bad GGUF magic'
+          assert version == 3, f'GGUF v{version}'
+          print(f'lito-chat.gguf: v{version}, {n_tensors} tensors, {n_kv} metadata keys')
+          PYEOF
 
           # Checksums so downloads can be verified
           (cd release && sha256sum * > SHA256SUMS.txt)
@@ -285,18 +288,16 @@ jobs:
             echo
             echo "| File | Description |"
             echo "|------|-------------|"
-            echo "| \`best_model.npz\` | Trained model weights (best checkpoint) |"
-            echo "| \`tokenizer.json\` | Tokenizer / vocabulary for the model |"
-            echo "| \`model.zip\` | The two files above bundled (what the Download button fetches) |"
+            echo "| \`lito-chat.gguf\` | **The from-scratch chat model** - a llama-architecture transformer trained by CI from random initialization (no pretrained weights), one offline file that also runs in llama.cpp, LM Studio or Ollama |"
             echo "| \`LitoEngine-Windows.zip\` | The frozen AI engine alone (Windows) - what the desktop app auto-downloads during setup |"
             echo "| \`LitoEngine-Linux.zip\` | The frozen AI engine alone (Linux) |"
             echo "| \`LitoEngine-macOS-apple.zip\` | The frozen AI engine alone (macOS, Apple silicon) |"
-            echo "| \`LitoDesktop-Windows.zip\` | **Desktop app for Windows** - the Go GUI plus the frozen LitoEngine AI engine (Python + numpy + the trained model are included), ready to unzip and run - nothing to install |"
+            echo "| \`LitoDesktop-Windows.zip\` | **Desktop app for Windows** - the Go GUI plus the frozen LitoEngine AI engine (Python + numpy + the GGUF model are included), ready to unzip and run - nothing to install |"
             echo "| \`LitoDesktop-Linux.zip\` | Desktop app for Linux (same self-contained bundle) |"
             echo "| \`LitoDesktop-macOS-apple.zip\` | Desktop app for macOS, Apple silicon (same self-contained bundle) |"
             echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
             echo
-            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the trained model) which the app starts and watches automatically - unzip and double-click, nothing to install. Got just the GUI binary without an engine? The app offers to download and set it up on first run. To run from source instead, put \`best_model.npz\` and \`tokenizer.json\` in a \`checkpoints/\` folder next to the code and run \`python server.py\`."
+            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the from-scratch GGUF chat model) which the app starts and watches automatically - unzip and double-click, nothing to install. Got just the GUI binary without an engine? The app offers to download and set it up on first run. To run from source instead, download \`lito-chat.gguf\` from this release (or train one: \`python train_big.py && python export_gguf.py\`), then run \`python server.py\`."
           } > notes.md
 
       - name: Publish the release

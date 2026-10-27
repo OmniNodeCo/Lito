@@ -15,12 +15,12 @@ Pipeline for every message:
 
 import os
 import re
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .model import TransformerLM
-from .tokenizer import BPETokenizer
+from .llama_np import LlamaEngine
 from .dataset import TrainingData
 from .dictionary import EnglishDictionary, WordEntry
 from .nlp import (Analyzer, Clause, Analysis, BM25Index, split_sentences,
@@ -49,12 +49,11 @@ class AIBrain:
     - Conversation management with coreference tracking
     """
 
-    def __init__(self, model_dir: str = 'checkpoints', search_enabled: bool = True,
+    def __init__(self, model_path: Optional[str] = None, search_enabled: bool = True,
                  dictionary_online: bool = True, learn_file: Optional[str] = None,
                  extensions: Optional[ExtensionManager] = None):
-        self.model_dir = model_dir
-        self.model: Optional[TransformerLM] = None
-        self.tokenizer: Optional[BPETokenizer] = None
+        self.model_path = model_path
+        self.model: Optional[LlamaEngine] = None
         self.conversation_history: List[Dict[str, str]] = []
         self.knowledge_base = self._build_knowledge_base()
         self.loaded = False
@@ -218,54 +217,55 @@ class AIBrain:
     # Model loading
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def find_gguf_models():
+        """Candidate lito-chat.gguf locations, best first:
+        an exported model next to the code, models downloaded by the
+        version database, and (frozen engine) the bundled copy."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [os.path.join(root, 'lito-chat.gguf')]
+        models_dir = os.path.join(root, 'models')
+        if os.path.isdir(models_dir):
+            for name in sorted(os.listdir(models_dir), reverse=True):
+                p = os.path.join(models_dir, name, 'lito-chat.gguf')
+                if os.path.isfile(p):
+                    candidates.append(p)
+        # Frozen engine: PyInstaller bundles data next to the executable
+        # (sys._MEIPASS when running from the one-folder build).
+        frozen = getattr(sys, '_MEIPASS', None)
+        for base in (frozen, os.path.dirname(os.path.abspath(sys.executable))):
+            if base and os.path.isdir(base):
+                p = os.path.join(base, 'lito-chat.gguf')
+                if os.path.isfile(p):
+                    candidates.append(p)
+                sub = os.path.join(base, 'models')
+                if os.path.isdir(sub):
+                    for name in sorted(os.listdir(sub), reverse=True):
+                        p = os.path.join(sub, name, 'lito-chat.gguf')
+                        if os.path.isfile(p):
+                            candidates.append(p)
+        return [c for c in candidates if os.path.isfile(c)]
+
     def initialize(self):
-        """Initialize or load the AI model."""
-        tokenizer_path = os.path.join(self.model_dir, 'tokenizer.json')
-        model_path = os.path.join(self.model_dir, 'best_model.npz')
-
-        if not os.path.exists(model_path):
-            model_path = os.path.join(self.model_dir, 'final_model.npz')
-
-        if os.path.exists(tokenizer_path) and os.path.exists(model_path):
-            print("Loading trained model...")
-            self.tokenizer = BPETokenizer()
-            self.tokenizer.load(tokenizer_path)
-
-            # Load config from model
-            loaded = np.load(model_path, allow_pickle=True)
-            if 'config' in loaded:
-                import json
-                config = json.loads(str(loaded['config']))
-            else:
-                config = {
-                    'vocab_size': self.tokenizer.vocab_size,
-                    'd_model': 128,
-                    'n_heads': 4,
-                    'n_layers': 4,
-                    'd_ff': 512,
-                    'max_seq_len': 256,
-                }
-
-            self.model = TransformerLM(
-                vocab_size=config['vocab_size'],
-                d_model=config['d_model'],
-                n_heads=config['n_heads'],
-                n_layers=config['n_layers'],
-                d_ff=config['d_ff'],
-                max_seq_len=config['max_seq_len'],
-                # v1.1.0 architecture options: old checkpoints simply fall
-                # back to the classic layout.
-                pos_encoding=config.get('pos_encoding', 'learned'),
-                norm=config.get('norm', 'layer'),
-                tie_weights=config.get('tie_weights', False),
-            )
-            self.model.load(model_path)
-            self.model.eval_mode()
-            self.loaded = True
-            print("Model loaded successfully!")
+        """Load the GGUF chat model (the engine runs it in numpy)."""
+        path = self.model_path
+        if not path:
+            candidates = self.find_gguf_models()
+            path = candidates[0] if candidates else None
+        if path and os.path.isfile(path):
+            try:
+                print(f"Loading GGUF model: {os.path.basename(path)}")
+                self.model = LlamaEngine(path)
+                self.model_path = path
+                self.loaded = True
+                print("Model loaded successfully!")
+            except Exception as e:
+                print(f"Failed to load GGUF model: {e}")
+                self.loaded = False
         else:
-            print("No trained model found. Using knowledge base, dictionary and search.")
-            print("Run 'python train.py' first to train the neural network.")
+            print("No GGUF model found. Using knowledge base, dictionary and search.")
+            print("Download one from the version database (or run "
+                  "'python train_big.py' + 'python export_gguf.py').")
             self.loaded = False
 
     # ------------------------------------------------------------------
@@ -554,13 +554,15 @@ class AIBrain:
         """Answer questions about the AI's own parameters."""
         if self.loaded and self.model is not None:
             count = getattr(self.model, '_param_count', 0)
-            return (f"My neural network is a transformer with {count:,} "
-                    f"parameters, built and trained entirely from scratch - no "
-                    f"pretrained weights. The rest of what I know comes from my "
-                    f"dictionary, knowledge base and web search.")
-        return ("I don't have the neural model loaded right now, so I can't "
-                "count my parameters - run 'python train.py' to train it. It's "
-                "a small transformer built entirely from scratch.")
+            return (f"My neural network is a llama-architecture transformer "
+                    f"with {count:,} parameters, built and trained entirely "
+                    f"from scratch - no pretrained weights. It runs from a "
+                    f"single GGUF file, the same one that works in llama.cpp, "
+                    f"LM Studio or Ollama.")
+        return ("I don't have the GGUF model loaded right now, so I can't "
+                "count its parameters - download one from the version "
+                "database, or train one with 'python train_big.py' and "
+                "'python export_gguf.py'.")
 
     # ------------------------------------------------------------------
     # Dictionary answers
@@ -1080,16 +1082,8 @@ class AIBrain:
         if response.startswith('🌐'):
             return response
         try:
-            context = ''
-            if len(self.conversation_history) > 1:
-                recent = self.conversation_history[-3:]
-                for msg in recent[:-1]:
-                    if msg['role'] == 'user':
-                        context += f"User: {msg['content']} "
-                    else:
-                        context += f"AI: {msg['content']} "
-            prompt = f"{context}User: {analysis.resolved_text or analysis.cleaned} AI:"
-            neural = self._generate_with_model(prompt, max_tokens=60)
+            neural = self._generate_with_model(
+                analysis.resolved_text or analysis.cleaned, max_tokens=60)
             if neural and len(neural) > 20:
                 low = neural.lower()
                 # Reject the model parroting the chat format back at us
@@ -1111,33 +1105,20 @@ class AIBrain:
         return response
 
     def _generate_with_model(self, prompt: str, max_tokens: int = 80) -> str:
-        """Generate text using the neural network model."""
+        """Generate an assistant reply with the GGUF model (ChatML)."""
         if not self.loaded or self.model is None:
             return ""
 
         try:
-            tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
-            if len(tokens) == 0:
-                return ""
-
-            input_ids = np.array(tokens).reshape(1, -1)
-            output_ids = self.model.generate(
-                input_ids,
-                max_new_tokens=max_tokens,
-                temperature=0.7,
-                top_k=40,
-                top_p=0.9,
-                repetition_penalty=1.1
-            )
-            generated_text = self.tokenizer.decode(output_ids.tolist())
-
-            # Clean up
-            generated_text = generated_text.strip()
-            # Remove the prompt from the beginning if repeated
-            if generated_text.lower().startswith(prompt.lower()):
-                generated_text = generated_text[len(prompt):].strip()
-
-            return generated_text
+            messages = []
+            # A little conversation context for the model
+            for msg in self.conversation_history[-3:-1]:
+                messages.append({'role': msg['role'], 'content': msg['content']})
+            messages.append({'role': 'user', 'content': prompt})
+            generated_text = self.model.chat(
+                messages, max_new_tokens=max_tokens,
+                temperature=0.7, top_p=0.9, repeat_penalty=1.15)
+            return generated_text.strip()
         except Exception:
             return ""
 

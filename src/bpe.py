@@ -57,6 +57,7 @@ class ByteBPE:
         # ids 0..255 are the byte tokens, then the special tokens
         self.vocab = [BYTE_MAP[b] for b in range(256)] + list(SPECIAL_TOKENS)
         self.merges = []  # list of (left, right) symbol pairs, in order
+        self.specials = list(SPECIAL_TOKENS)  # overridable (GGUF loads)
         self._ranks = {}
         self._cache = {}
 
@@ -170,7 +171,8 @@ class ByteBPE:
         """Text -> token ids. Special (chat) tokens are matched first."""
         ids = []
         if add_special_tokens and self.special_ids:
-            pattern = '(' + '|'.join(re.escape(s) for s in SPECIAL_TOKENS) + ')'
+            pattern = '(' + '|'.join(re.escape(s) for s in self.specials
+                                     if s in self.special_ids) + ')'
             for chunk in re.split(pattern, text):
                 if not chunk:
                     continue
@@ -215,11 +217,13 @@ class ByteBPE:
     # ------------------------------------------------------------------
     @property
     def special_ids(self):
-        return {s: 256 + i for i, s in enumerate(SPECIAL_TOKENS)}
+        """Special token string -> id, discovered from the vocab."""
+        special_set = set(self.specials)
+        return {t: i for i, t in enumerate(self.vocab) if t in special_set}
 
     @property
     def id_to_special(self):
-        return {256 + i: s for i, s in enumerate(SPECIAL_TOKENS)}
+        return {i: t for t, i in self.special_ids.items()}
 
     @property
     def token_to_id(self):
@@ -236,7 +240,7 @@ class ByteBPE:
         data = {
             'vocab': self.vocab,
             'merges': [list(p) for p in self.merges],
-            'specials': SPECIAL_TOKENS,
+            'specials': self.specials,
         }
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False)
@@ -248,6 +252,31 @@ class ByteBPE:
         tok = cls(vocab_size=len(data['vocab']))
         tok.vocab = data['vocab']
         tok.merges = [tuple(p) for p in data['merges']]
+        tok.specials = data.get('specials', list(SPECIAL_TOKENS))
+        tok._rebuild_ranks()
+        tok._cache.clear()
+        return tok
+
+    @classmethod
+    def from_vocab(cls, vocab, merges, token_types=None):
+        """Build a tokenizer from raw vocab/merges lists - the form they
+        are stored in inside a GGUF file (tokenizer.ggml.tokens etc.).
+
+        merges: list of 'left right' strings (byte-unicode form).
+        token_types: optional list where 3 marks CONTROL (special) tokens;
+        without it the ChatML markers are detected by name.
+        """
+        tok = cls(vocab_size=len(vocab))
+        tok.vocab = list(vocab)
+        tok.merges = []
+        for m in merges:
+            left, right = m.split(' ', 1)
+            tok.merges.append((left, right))
+        if token_types is not None:
+            tok.specials = [vocab[i] for i, t in enumerate(token_types)
+                            if t == 3]
+        else:
+            tok.specials = [t for t in SPECIAL_TOKENS if t in set(vocab)]
         tok._rebuild_ranks()
         tok._cache.clear()
         return tok

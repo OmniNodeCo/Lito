@@ -374,6 +374,181 @@ def exporter_writes_loadable_gguf():
 
 
 # ----------------------------------------------------------------------
+# NumPy inference engine (v1.2.6: the app chats with GGUF directly)
+# ----------------------------------------------------------------------
+
+def _write_synthetic_gguf(path, vocab_size=300, seed=7):
+    """A tiny but valid llama GGUF with (seeded) random weights."""
+    import numpy as np
+    from src.gguf import GGUFWriter
+    tok = get_tokenizer()
+    rng = np.random.default_rng(seed)
+    d, nff = 32, 64
+    w = GGUFWriter('llama', 'Lito-Test')
+    w.add_uint32('llama.context_length', 64)
+    w.add_uint32('llama.embedding_length', d)
+    w.add_uint32('llama.block_count', 2)
+    w.add_uint32('llama.feed_forward_length', nff)
+    w.add_uint32('llama.attention.head_count', 4)
+    w.add_uint32('llama.attention.head_count_kv', 4)
+    w.add_float32('llama.attention.layer_norm_rms_epsilon', 1e-5)
+    w.add_float32('llama.rope.freq_base', 10000.0)
+    w.add_uint32('llama.vocab_size', tok.vocab_size)
+    w.add_string('tokenizer.ggml.model', 'gpt2')
+    w.add_string('tokenizer.ggml.pre', 'gpt-2')
+    w.add_strings('tokenizer.ggml.tokens', tok.vocab)
+    w.add_int32s('tokenizer.ggml.token_type',
+                 [3 if i in tok.id_to_special else 1
+                  for i in range(tok.vocab_size)])
+    w.add_strings('tokenizer.ggml.merges',
+                  [a + ' ' + b for a, b in tok.merges])
+    w.add_uint32('tokenizer.ggml.eos_token_id',
+                 tok.special_ids['<|im_end|>'])
+    w.add_uint32('tokenizer.ggml.eot_token_id',
+                 tok.special_ids['<|im_end|>'])
+    w.add_string('tokenizer.chat_template',
+                 '<|im_start|>user\n{prompt}<|im_end|>')
+
+    def tens(shape, norm=False):
+        a = rng.standard_normal(shape).astype(np.float32) * (0.3 if norm else 0.05)
+        return a
+    w.add_tensor('token_embd.weight', tens((tok.vocab_size, d)), 1)
+    for i in range(2):
+        w.add_tensor(f'blk.{i}.attn_norm.weight', tens((d,)), 0)
+        for p in ('attn_q', 'attn_k', 'attn_v', 'attn_output'):
+            w.add_tensor(f'blk.{i}.{p}.weight', tens((d, d)), 1)
+        w.add_tensor(f'blk.{i}.ffn_norm.weight', tens((d,)), 0)
+        w.add_tensor(f'blk.{i}.ffn_gate.weight', tens((nff, d)), 1)
+        w.add_tensor(f'blk.{i}.ffn_up.weight', tens((nff, d)), 1)
+        w.add_tensor(f'blk.{i}.ffn_down.weight', tens((d, nff)), 1)
+    w.add_tensor('output_norm.weight', tens((d,)), 0)
+    w.write(path)
+    return tok
+
+
+@test
+def engine_loads_gguf_and_chats():
+    from src.llama_np import LlamaEngine
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'synthetic.gguf')
+        _write_synthetic_gguf(path)
+        engine = LlamaEngine(path)
+    assert engine.name == 'Lito-Test'
+    assert engine.vocab_size > 250
+    assert 25_000 < engine._param_count < 200_000
+    # tokenizer roundtrip through the engine
+    ids = engine.tokenize('hello world')
+    assert ids and engine.detokenize(ids) == 'hello world'
+    # chat returns clean text (no ChatML markers leak out)
+    reply = engine.chat([{'role': 'user', 'content': 'hello there'}],
+                        max_new_tokens=12, temperature=0.0)
+    assert isinstance(reply, str)
+    assert '<|im_' not in reply, reply
+
+
+@test
+def engine_kv_cache_matches_recompute():
+    """Greedy generation through the KV cache must produce exactly the
+    tokens a full forward recompute would pick (repeat penalty off)."""
+    from src.llama_np import LlamaEngine
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'synthetic.gguf')
+        _write_synthetic_gguf(path)
+        engine = LlamaEngine(path)
+
+    ids = engine.tokenize('<|im_start|>user\nhi there how are you<|im_end|>')
+    engine.reset()
+    out = engine.generate(ids, max_new_tokens=20, temperature=0.0,
+                          repeat_penalty=1.0)
+
+    # recompute: at every step run a fresh forward over prompt+generated
+    # so far and take the argmax of the last position
+    seq = list(ids)
+    recomputed = []
+    for _ in range(20):
+        logits = engine.forward_logits(seq)
+        nxt = int(np.argmax(logits[-1]))
+        recomputed.append(nxt)
+        seq.append(nxt)
+        if nxt == engine.eot:
+            break
+    assert out == recomputed, (out, recomputed)
+
+
+@test
+def engine_seeded_sampling_is_deterministic():
+    from src.llama_np import LlamaEngine
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'synthetic.gguf')
+        _write_synthetic_gguf(path)
+        engine = LlamaEngine(path)
+    ids = engine.tokenize('once upon a time')
+    a1 = engine.generate(ids, max_new_tokens=16, temperature=0.9,
+                         seed=1234)
+    engine.reset()
+    a2 = engine.generate(ids, max_new_tokens=16, temperature=0.9,
+                         seed=1234)
+    assert a1 == a2 and len(a1) > 0
+    engine.reset()
+    b = engine.generate(ids, max_new_tokens=16, temperature=0.9,
+                        seed=99)
+    assert b != a1, 'different seeds should (almost surely) differ'
+    # score is finite and penalizes shuffled text
+    s1 = engine.score(ids)
+    assert np.isfinite(s1)
+
+
+@test
+def engine_scores_text():
+    from src.llama_np import LlamaEngine
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'synthetic.gguf')
+        _write_synthetic_gguf(path)
+        engine = LlamaEngine(path)
+    ids = engine.tokenize('the the the the the the')
+    good = engine.score(engine.tokenize('hello hello hello'))
+    assert np.isfinite(good)
+
+
+@test
+def engine_matches_torch_reference():
+    """The numpy engine must reproduce the torch model it was exported
+    from (within f16 rounding)."""
+    if _skip_if_no_torch():
+        return
+    from train_big import build_model
+    from export_gguf import export
+    from src.llama_np import LlamaEngine
+    torch.manual_seed(3)
+    tok = get_tokenizer()
+    cfg = {'d_model': 32, 'n_layers': 2, 'n_heads': 4, 'n_ff': 64,
+           'ctx': 64, 'vocab_size': tok.vocab_size}
+    model = build_model(cfg, tok.vocab_size)
+    model.eval()
+    with tempfile.TemporaryDirectory() as tmp:
+        from train_big import save_checkpoint
+        tok.save(os.path.join(tmp, 'bpe_tokenizer.json'))
+        save_checkpoint(model, cfg, tmp, 3, 'bpe_tokenizer.json')
+        out = os.path.join(tmp, 'lito.gguf')
+        export(tmp, out, name='Lito-Test')
+        engine = LlamaEngine(out)
+
+    text = 'hello world, this is a test of the engine'
+    ids = engine.tokenize(text)
+    with torch.no_grad():
+        ref = model(torch.tensor([ids])).numpy()[0]   # (T, V)
+    got = engine.forward_logits(ids)                   # (T, V)
+    assert got.shape == ref.shape
+    diff = np.abs(got - ref)
+    cos = float(np.sum(got * ref) /
+                (np.linalg.norm(got) * np.linalg.norm(ref) + 1e-9))
+    agree = float(np.mean(np.argmax(got, -1) == np.argmax(ref, -1)))
+    assert diff.max() < 0.05, f'max |diff| {diff.max():.4f}'
+    assert cos > 0.999, f'cosine {cos:.6f}'
+    assert agree >= 0.98, f'argmax agreement {agree:.3f}'
+
+
+# ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------
 

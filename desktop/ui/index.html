@@ -44,10 +44,7 @@
         <button id="btn-download" class="btn btn-primary btn-block" title="Browse the version database (GitHub Releases)">
           ⬇&nbsp; Download
         </button>
-        <div class="row">
-          <button id="btn-refresh" class="btn btn-ghost" title="Refresh models">⟳ Refresh</button>
-          <button id="btn-train" class="btn btn-ghost" title="Train a new model">⚙ Train</button>
-        </div>
+        <button id="btn-refresh" class="btn btn-ghost btn-block" title="Refresh models">⟳ Refresh</button>
       </div>
 
       <div class="section-label">Extensions</div>
@@ -117,31 +114,6 @@
         <div class="dl-progress-label"><span id="dl-tag"></span><span id="dl-pct"></span></div>
         <div class="bar"><div id="dl-bar" class="bar-fill"></div></div>
       </div>
-    </div>
-  </div>
-
-  <!-- ======================= Train modal ======================= -->
-  <div id="modal-train" class="modal-backdrop hidden">
-    <div class="modal modal-wide">
-      <div class="modal-head">
-        <h2>Train a new model</h2>
-        <button class="modal-close" data-close="modal-train">✕</button>
-      </div>
-      <div class="train-form" id="train-form">
-        <label>epochs<input data-k="epochs" value="30" type="number" min="1"></label>
-        <label>d_model<input data-k="d_model" value="128" type="number" min="8"></label>
-        <label>n_layers<input data-k="n_layers" value="4" type="number" min="1"></label>
-        <label>n_heads<input data-k="n_heads" value="4" type="number" min="1"></label>
-        <label>d_ff<input data-k="d_ff" value="512" type="number" min="8"></label>
-        <label>vocab_size<input data-k="vocab_size" value="2048" type="number" min="32"></label>
-        <label>batch_size<input data-k="batch_size" value="4" type="number" min="1"></label>
-        <label>seq_len<input data-k="seq_len" value="64" type="number" min="8"></label>
-        <label>lr<input data-k="lr" value="0.0003" type="number" step="any"></label>
-        <label class="check"><input data-k="classic" type="checkbox"> classic architecture (v1.0)</label>
-        <button id="btn-start-train" class="btn btn-primary">▶ Start training</button>
-      </div>
-      <p class="modal-sub">Runs <code>python train.py</code> in the background — the finished model lands in <code>checkpoints/</code> and loads automatically.</p>
-      <pre id="train-log" class="train-log hidden"></pre>
     </div>
   </div>
 

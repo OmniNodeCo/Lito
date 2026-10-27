@@ -10,7 +10,6 @@ const state = {
   activeModel: "",
   sending: false,
   dlTimer: null,
-  trainTimer: null,
   offline: false,
 };
 
@@ -81,7 +80,7 @@ async function refreshStatus() {
     ? "loading model…"
     : s.loaded
       ? `model ready · ${s.params.toLocaleString()} params`
-      : "knowledge base only (train or download a model)";
+      : "knowledge base only (download a model)";
   $("send").disabled = state.sending || s.loading;
   if (s.search !== undefined) $("search-toggle").checked = s.search;
 }
@@ -194,7 +193,7 @@ function renderModels() {
     empty.innerHTML =
       '<span class="m-icon">◇</span><span class="m-body">' +
       '<span class="m-name">No models yet</span>' +
-      '<span class="m-sub">download or train one</span></span>';
+      '<span class="m-sub">download one</span></span>';
     list.appendChild(empty);
     return;
   }
@@ -434,7 +433,7 @@ async function openDownloadModal() {
   if (!data.releases.length) {
     list.innerHTML = `<div class="release-item"><span class="r-body">` +
       `<span class="r-tag">No published models yet</span>` +
-      `<span class="r-meta">Train your own with the Train button!</span></span></div>`;
+      `<span class="r-meta">Every release publishes a trained lito-chat.gguf.</span></span></div>`;
     return;
   }
   for (const r of data.releases) {
@@ -515,77 +514,6 @@ function fmtBytes(n) {
   return n.toFixed(n < 10 && i > 0 ? 1 : 0) + " " + units[i];
 }
 
-/* ------------------------------ Train modal ------------------------------ */
-
-function openTrainModal() {
-  openModal("modal-train");
-  // Show any existing log; only poll while a run is actually active.
-  api(`/api/train/status?since=0`).then((s) => {
-    trainSeen = 0;
-    const log = $("train-log");
-    if (s.lines && s.lines.length) {
-      log.classList.remove("hidden");
-      log.textContent = s.lines.join("\n") + "\n";
-      trainSeen = s.total;
-    }
-    if (s.running) {
-      pollTrain();
-    } else {
-      $("btn-start-train").disabled = false;
-    }
-  });
-}
-
-async function startTraining() {
-  const params = {};
-  document.querySelectorAll("#train-form [data-k]").forEach((el) => {
-    if (el.type === "checkbox") {
-      if (el.checked) params[el.dataset.k] = true;
-    } else if (el.value.trim()) {
-      params[el.dataset.k] = el.value.trim();
-    }
-  });
-  const r = await post("/api/train", params);
-  if (r.error) return toast(r.error, "error");
-  toast("Training started", "ok");
-  $("train-log").classList.remove("hidden");
-  $("train-log").textContent = "$ " + (r.command || "") + "\n";
-  $("btn-start-train").disabled = true;
-  pollTrain();
-}
-
-let trainSeen = 0;
-function pollTrain() {
-  if (state.trainTimer) return;
-  state.trainTimer = setInterval(async () => {
-    try {
-      const s = await api(`/api/train/status?since=${trainSeen}`);
-      const log = $("train-log");
-      if (s.lines && s.lines.length) {
-        trainSeen = s.total;
-        log.classList.remove("hidden");
-        log.textContent += s.lines.join("\n") + "\n";
-        log.scrollTop = log.scrollHeight;
-      }
-      if (!s.running) {
-        if (s.returncode !== null && state.trainTimer) {
-          if (s.returncode === 0) {
-            toast("Training finished ✓", "ok");
-            state.activeModel = "checkpoints";
-            await Promise.all([refreshModels(), refreshStatus()]);
-            systemMsg("Training finished — the new model in “checkpoints” is now active.");
-          } else {
-            toast(`Training exited with code ${s.returncode}`, "error");
-          }
-          $("btn-start-train").disabled = false;
-        }
-        clearInterval(state.trainTimer);
-        state.trainTimer = null;
-      }
-    } catch (e) { /* transient */ }
-  }, 900);
-}
-
 /* ------------------------------ Misc ------------------------------ */
 
 function escapeHtml(s) {
@@ -611,8 +539,6 @@ window.addEventListener("DOMContentLoaded", () => {
     await Promise.all([refreshModels(), refreshStatus()]);
     toast("Refreshed");
   };
-  $("btn-train").onclick = openTrainModal;
-  $("btn-start-train").onclick = startTraining;
   $("btn-new-chat").onclick = async () => {
     await post("/api/reset");
     const chat = $("chat");

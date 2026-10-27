@@ -1,2 +1,1 @@
-"""Lito - Built from scratch neural network framework."""
-__version__ = "1.0.0"
+"""Lito - AI built from scratch: numpy GGUF engine, NLP, dictionary, search."""

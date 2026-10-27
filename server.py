@@ -2,11 +2,12 @@
 """
 Lito API server - the local backend for the Lito desktop app.
 
-Exposes the brain, the model manager (version database), the extensions
-and training over a localhost JSON API, Ollama-style:
+Exposes the brain (chatting with the from-scratch GGUF model), the model
+manager (version database) and the extensions over a localhost JSON API,
+Ollama-style:
 
     GET  /api/version          app + model status (poll while loading)
-    GET  /api/models           local models (trained + downloaded)
+    GET  /api/models           local GGUF models (downloaded + exported)
     GET  /api/releases         version database (GitHub Releases)
     POST /api/models/use       {name} or {path} - switch the active model
     POST /api/models/delete    {name}
@@ -18,15 +19,16 @@ and training over a localhost JSON API, Ollama-style:
     POST /api/chat             {message} -> {response}
     POST /api/reset            reset the conversation
     GET  /api/info             model / search / knowledge info
-    POST /api/train            {epochs, d_model, ..., classic} start training
-    GET  /api/train/status     ?since=N - log lines after N + state
 
-It also serves the desktop web UI (desktop/ui/) when present, so running
-just `python server.py` gives the whole app in a browser. The Go desktop
-app (desktop/) embeds the same UI and proxies /api/* to this server.
+The model is a single lito-chat.gguf file, trained from scratch by this
+repo (train_big.py) and run entirely in numpy (src/llama_np.py) - no ML
+frameworks at runtime. It also serves the desktop web UI (desktop/ui/)
+when present, so running just `python server.py` gives the whole app in
+a browser. The Go desktop app (desktop/) embeds the same UI and proxies
+/api/* to this server.
 
 Run:
-    python server.py [--port 5486] [--dir <model_dir>] [--no-search] [--no-browser]
+    python server.py [--port 5486] [--dir <model.gguf|dir>] [--no-search] [--no-browser]
 
 Standard library only - no extra dependencies.
 """
@@ -34,10 +36,8 @@ Standard library only - no extra dependencies.
 import argparse
 import json
 import os
-import subprocess
 import sys
 import threading
-import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -47,15 +47,10 @@ sys.path.insert(0, ROOT)
 
 from src.brain import AIBrain
 from src.extensions import ExtensionManager
-from src.model_manager import ModelManager, format_size
+from src.model_manager import ModelManager, format_size, MODEL_FILENAME
 from src.version import APP_NAME, __version__, format_version
 
 UI_DIR = os.path.join(ROOT, 'desktop', 'ui')
-
-# Training options the API accepts (name -> flag name for train.py).
-TRAIN_INT_FIELDS = ('epochs', 'd_model', 'n_layers', 'n_heads', 'd_ff',
-                    'vocab_size', 'batch_size', 'seq_len')
-TRAIN_FLOAT_FIELDS = ('lr',)
 
 
 class LitoServer:
@@ -75,11 +70,7 @@ class LitoServer:
         self.download_state = {'active': False, 'tag': '', 'done': 0,
                                'total': 0, 'error': None, 'model': None}
         self._download_lock = threading.Lock()
-        # Training state (single run).
-        self.train_state = {'running': False, 'lines': [],
-                            'returncode': None, 'started_at': ''}
-        self._train_lock = threading.Lock()
-        self.startup_dir = model_dir or os.path.join(ROOT, 'checkpoints')
+        self.startup_dir = model_dir
 
     # ------------------------------------------------------------------
     # Brain lifecycle
@@ -88,21 +79,37 @@ class LitoServer:
     def start_background_load(self):
         def worker():
             try:
-                self.load_brain(self.startup_dir)
+                self.load_brain(self.resolve_model_path(self.startup_dir))
             except Exception as e:  # pragma: no cover - defensive
                 self.brain_error = str(e)
         threading.Thread(target=worker, daemon=True).start()
 
-    def load_brain(self, model_dir):
-        """Build + initialize a brain for model_dir and make it active."""
+    def resolve_model_path(self, target=None):
+        """Pick the GGUF file to load: an explicit file, a model dir, a
+        downloaded model, a local export, or the bundled engine copy."""
+        if target:
+            if os.path.isfile(target):
+                return target
+            if os.path.isfile(os.path.join(target, MODEL_FILENAME)):
+                return os.path.join(target, MODEL_FILENAME)
+        # A model name from the version database (models/<tag>/)
+        if target:
+            named = os.path.join(ROOT, 'models', target, MODEL_FILENAME)
+            if os.path.isfile(named):
+                return named
+        candidates = AIBrain.find_gguf_models()
+        return candidates[0] if candidates else None
+
+    def load_brain(self, model_path):
+        """Build + initialize a brain for a GGUF file and make it active."""
         with self._load_lock:
-            brain = AIBrain(model_dir=model_dir,
+            brain = AIBrain(model_path=model_path,
                             search_enabled=self.search_enabled,
                             extensions=self.ext)
             brain.initialize()
             with self._brain_lock:
                 self.brain = brain
-                self.brain_dir = model_dir
+                self.brain_dir = model_path
                 self.brain_error = None
             return brain
 
@@ -233,72 +240,6 @@ class LitoServer:
         threading.Thread(target=worker, daemon=True).start()
         return {'started': True, 'tag': str(tag)}
 
-    # ------------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------------
-
-    def start_training(self, params):
-        with self._train_lock:
-            if self.train_state['running']:
-                return {'error': 'training is already running'}
-            if getattr(sys, 'frozen', False):
-                # Frozen engine: no python/train.py on disk - re-run this
-                # executable in trainer mode (see the --lito-train shim
-                # in main()).
-                cmd = [sys.executable, '--lito-train']
-            else:
-                cmd = [sys.executable, os.path.join(ROOT, 'train.py')]
-            for key in TRAIN_INT_FIELDS:
-                try:
-                    value = int(params.get(key))
-                except (TypeError, ValueError):
-                    continue
-                cmd += [f'--{key}', str(value)]
-            for key in TRAIN_FLOAT_FIELDS:
-                try:
-                    value = float(params.get(key))
-                except (TypeError, ValueError):
-                    continue
-                cmd += [f'--{key}', repr(value)]
-            if params.get('classic'):
-                cmd.append('--classic')
-            try:
-                proc = subprocess.Popen(
-                    cmd, cwd=ROOT, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, text=True, bufsize=1,
-                    env=dict(os.environ, PYTHONUNBUFFERED='1'))
-            except Exception as e:
-                return {'error': f'failed to start training: {e}'}
-            self.train_state.update(running=True, lines=[], returncode=None,
-                                    started_at=time.strftime('%Y-%m-%d %H:%M'))
-
-        def reader():
-            for line in proc.stdout:
-                with self._train_lock:
-                    self.train_state['lines'].append(line.rstrip('\n'))
-            code = proc.wait()
-            with self._train_lock:
-                self.train_state['running'] = False
-                self.train_state['returncode'] = code
-            if code == 0:
-                # Annotate the trained model so it shows up nicely.
-                self.mm.write_info(os.path.join(ROOT, 'checkpoints'),
-                                   source='trained',
-                                   trained_at=time.strftime('%Y-%m-%d'))
-
-        threading.Thread(target=reader, daemon=True).start()
-        return {'started': True, 'command': ' '.join(cmd)}
-
-    def train_status(self, since=0):
-        with self._train_lock:
-            lines = self.train_state['lines']
-            return {
-                'running': self.train_state['running'],
-                'returncode': self.train_state['returncode'],
-                'total': len(lines),
-                'lines': lines[max(0, int(since)):],
-            }
-
 
 def make_handler(server_state: LitoServer):
     class Handler(BaseHTTPRequestHandler):
@@ -366,15 +307,12 @@ def make_handler(server_state: LitoServer):
                     'model': os.path.basename(self.state.brain_dir or ''),
                     'loaded': bool(brain and brain.loaded),
                     'params': getattr(brain.model, '_param_count', 0) if brain and brain.loaded else 0,
-                    'vocab_size': self.state.mm._describe_npz(self.state.brain_dir).get('vocab_size', '') if self.state.brain_dir else '',
+                    'vocab_size': (brain.model.vocab_size if brain and brain.loaded
+                                   and brain.model else ''),
                     'search': bool(brain.search.enabled) if brain else self.state.search_enabled,
                     'knowledge_version': format_version(brain.dictionary.knowledge_version) if brain else '',
                     'learned_words': list(brain.dictionary.learned_words) if brain else [],
                 })
-            elif u.path == '/api/train/status':
-                q = parse_qs(u.query)
-                since = int(q.get('since', ['0'])[0])
-                self._json(self.state.train_status(since))
             elif u.path.startswith('/api/'):
                 self._json({'error': f'unknown endpoint {u.path}'}, 404)
             else:
@@ -418,7 +356,7 @@ def make_handler(server_state: LitoServer):
                     self._json({'error': f'no model named {target!r}'}, 404)
                     return
                 try:
-                    st.load_brain(model.path)
+                    st.load_brain(st.mm.model_path(model))
                 except Exception as e:
                     self._json({'error': f'failed to load: {e}'}, 500)
                     return
@@ -435,8 +373,6 @@ def make_handler(server_state: LitoServer):
                     self._json({'error': f'could not delete {name!r}'}, 400)
             elif u.path == '/api/download':
                 self._json(st.start_download(str(data.get('tag', ''))))
-            elif u.path == '/api/train':
-                self._json(st.start_training(data))
             elif u.path.startswith('/api/'):
                 self._json({'error': f'unknown endpoint {u.path}'}, 404)
             else:
@@ -480,14 +416,6 @@ def make_handler(server_state: LitoServer):
 
 
 def main():
-    # Frozen-engine helper: a PyInstaller-packaged engine has no separate
-    # python or train.py, so the API server re-runs ITS OWN executable to
-    # train (see start_training): LitoEngine --lito-train <train args>.
-    if len(sys.argv) > 1 and sys.argv[1] == '--lito-train':
-        sys.argv = ['train.py'] + sys.argv[2:]
-        from train import main as train_main
-        return train_main()
-
     parser = argparse.ArgumentParser(
         description=f'{APP_NAME} API server (local backend for the desktop app)')
     parser.add_argument('--port', type=int, default=5486,
@@ -496,7 +424,7 @@ def main():
                         help='interface to bind (default 127.0.0.1; use '
                              '0.0.0.0 only on machines you trust)')
     parser.add_argument('--dir', default=None,
-                        help='model directory to load (default: checkpoints)')
+                        help='GGUF model file or model directory to load')
     parser.add_argument('--no-search', action='store_true',
                         help='disable web search')
     parser.add_argument('--no-browser', action='store_true',
@@ -511,7 +439,8 @@ def main():
     url = f'http://127.0.0.1:{httpd.server_address[1]}'
     print(f'{APP_NAME} {format_version(__version__)} API server')
     print(f'  listening on {args.host}:{httpd.server_address[1]}')
-    print(f'  model dir: {os.path.basename(state.startup_dir)}')
+    model = state.resolve_model_path(state.startup_dir)
+    print(f'  model: {os.path.basename(model) if model else "(none found)"}')
     print(f'  press Ctrl+C to stop')
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

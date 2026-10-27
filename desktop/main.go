@@ -224,7 +224,7 @@ func (m *backendManager) spawn(ctx context.Context) {
 			"--host", "127.0.0.1",
 			"--port", strconv.Itoa(bport),
 			"--no-browser")
-		child.Dir = filepath.Dir(serverPy) // so checkpoints/ & data/ resolve next to server.py
+		child.Dir = filepath.Dir(serverPy) // so models/ & data/ resolve next to server.py
 	}
 	child.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
 	child.Stdout = log.Writer()

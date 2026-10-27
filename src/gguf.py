@@ -1,5 +1,5 @@
 """
-A from-scratch GGUF (GPT-Uniform-File, version 3) writer.
+A from-scratch GGUF (GPT-Uniform-File, version 3) writer and reader.
 
 GGUF is the model format used by llama.cpp (and LM Studio, Ollama and
 friends). The format is delightfully simple:
@@ -9,12 +9,13 @@ friends). The format is delightfully simple:
     tensors: name, n_dims, ne[], type, offset
     data:    raw tensor bytes, each tensor aligned to 32 bytes
 
-Only what Lito's exporter needs is implemented: strings, ints, floats,
-bools and arrays of them, plus F32/F16 tensors. No dependencies beyond
-numpy.
+Only what Lito needs is implemented: strings, ints, floats, bools and
+arrays of them, plus F32/F16 tensors. No dependencies beyond numpy.
 """
 
 import struct
+
+import numpy as np
 
 GGUF_MAGIC = 0x46554747  # 'GGUF' little-endian
 GGUF_VERSION = 3
@@ -176,3 +177,124 @@ class GGUFWriter:
         with open(path, 'wb') as f:
             f.write(bytes(out))
         return offset  # size of the tensor data section
+
+
+# ----------------------------------------------------------------------
+# Reader (used by the numpy inference engine, src/llama_np.py)
+# ----------------------------------------------------------------------
+
+_SCALAR_FMT = {UINT8: ('<B', 1), INT8: ('<b', 1), UINT16: ('<H', 2),
+               INT16: ('<h', 2), UINT32: ('<I', 4), INT32: ('<i', 4),
+               FLOAT32: ('<f', 4), BOOL: ('<B', 1), UINT64: ('<Q', 8),
+               INT64: ('<q', 8), FLOAT64: ('<d', 8)}
+
+_TENSOR_DTYPES = {TYPE_F32: np.float32, TYPE_F16: np.float16}
+
+
+def _parse_header(raw, path):
+    """Parse header + metadata + tensor infos (no tensor data).
+    Returns (metadata, infos, data_start) where infos is a list of
+    (name, ne, type, offset)."""
+    magic, version, n_tensors, n_kv = struct.unpack('<IIQQ', raw[:24])
+    if magic != GGUF_MAGIC:
+        raise ValueError(f'{path}: not a GGUF file (bad magic)')
+    if version != GGUF_VERSION:
+        raise ValueError(f'{path}: GGUF v{version} unsupported '
+                         f'(can read v{GGUF_VERSION})')
+
+    pos = 24
+    metadata = {}
+    for _ in range(n_kv):
+        (klen,) = struct.unpack_from('<Q', raw, pos); pos += 8
+        key = raw[pos:pos + klen].decode('utf-8'); pos += klen
+        (vtype,) = struct.unpack_from('<I', raw, pos); pos += 4
+        if vtype == STRING:
+            (slen,) = struct.unpack_from('<Q', raw, pos); pos += 8
+            value = raw[pos:pos + slen].decode('utf-8'); pos += slen
+        elif vtype == ARRAY:
+            (itype,) = struct.unpack_from('<I', raw, pos); pos += 4
+            (cnt,) = struct.unpack_from('<Q', raw, pos); pos += 8
+            if itype == STRING:
+                value = []
+                for _ in range(cnt):
+                    (slen,) = struct.unpack_from('<Q', raw, pos); pos += 8
+                    value.append(raw[pos:pos + slen].decode('utf-8'))
+                    pos += slen
+            else:
+                fmt, size = _SCALAR_FMT[itype]
+                value = list(struct.unpack_from('<' + fmt[1:] * cnt,
+                                                raw, pos))
+                pos += size * cnt
+        else:
+            fmt, size = _SCALAR_FMT[vtype]
+            (value,) = struct.unpack_from(fmt, raw, pos)
+            pos += size
+        metadata[key] = value
+
+    infos = []
+    for _ in range(n_tensors):
+        (nlen,) = struct.unpack_from('<Q', raw, pos); pos += 8
+        name = raw[pos:pos + nlen].decode('utf-8'); pos += nlen
+        (nd,) = struct.unpack_from('<I', raw, pos); pos += 4
+        ne = struct.unpack_from('<' + 'Q' * nd, raw, pos); pos += 8 * nd
+        (ttype,) = struct.unpack_from('<I', raw, pos); pos += 4
+        (off,) = struct.unpack_from('<Q', raw, pos); pos += 8
+        infos.append((name, ne, ttype, off))
+
+    # The tensor data section starts 32-byte aligned after the infos.
+    data_start = (pos + GGUF_ALIGNMENT - 1) // GGUF_ALIGNMENT * GGUF_ALIGNMENT
+    return metadata, infos, data_start
+
+
+def read_gguf_metadata(path):
+    """Read only a GGUF file's metadata + tensor shapes.
+
+    Returns (metadata, shapes) where shapes maps tensor name to
+    (ne tuple, type int) - enough to count parameters without loading
+    any weights. Used by the model manager."""
+    with open(path, 'rb') as f:
+        head = f.read(1 << 20)  # header + infos + at most 1MB of strings
+    while True:
+        try:
+            metadata, infos, _ = _parse_header(head, path)
+        except struct.error:
+            # metadata bigger than our first read - grow and retry
+            if len(head) > (1 << 26):
+                raise
+            head += open(path, 'rb').read()  # pragma: no cover
+            continue
+        return metadata, {name: (ne, ttype) for name, ne, ttype, _ in infos}
+
+
+def read_gguf(path):
+    """Parse a GGUF v3 file.
+
+    Returns (metadata, tensors):
+      metadata: {key: value} - strings, ints, floats, bools, and lists
+                for arrays
+      tensors:  {name: numpy ndarray} in torch shape (rows = output
+                features); ne dims are reversed back on read. Floats are
+                returned as float32 for direct use.
+    """
+    with open(path, 'rb') as f:
+        raw = f.read()
+
+    metadata, infos, data_start = _parse_header(raw, path)
+
+    tensors = {}
+    for name, ne, ttype, off in infos:
+        dtype = _TENSOR_DTYPES.get(ttype)
+        if dtype is None:
+            raise ValueError(f'{path}: tensor {name} has unsupported '
+                             f'type {ttype}')
+        count = 1
+        for d in ne:
+            count *= d
+        nbytes = count * dtype().itemsize
+        buf = raw[data_start + off:data_start + off + nbytes]
+        arr = np.frombuffer(buf, dtype=dtype)
+        # GGUF ne is reversed relative to numpy/torch: ne=(a, b) means
+        # shape (b, a). 1-D stays as-is.
+        shape = tuple(reversed(ne))
+        tensors[name] = arr.reshape(shape).astype(np.float32)
+    return metadata, tensors

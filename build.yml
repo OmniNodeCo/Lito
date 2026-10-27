@@ -11,19 +11,23 @@ onefile: true
 # icon: assets/icon.ico
 
 # Additional data directories to include (shared by all targets)
-extra_data: [checkpoints, src, data, extensions]
+extra_data: [src, data, extensions]
+
+# Additional single files to include (the GGUF model is bundled with the
+# engine so it works offline out of the box)
+extra_files: [lito-chat.gguf]
 
 # Hidden imports that PyInstaller might miss (shared by all targets)
 hidden_imports: [numpy, json, re, os, sys, time, argparse]
 
 # Build targets (the app is the UI: the Go desktop app + the frozen
-# engine below; the old terminal chat app was removed in v1.2.5):
+# engine below):
 #   name             output name (dist/<name>)
 #   entry_point       script to freeze
 #   console          true = terminal app
 #   onefile          false = a folder (exe + _internal/) - used by the
-#                    engine so learned words, caches and trained models
-#                    persist next to it instead of a temp dir
+#                    engine so learned words, caches and downloaded
+#                    models persist next to it instead of a temp dir
 #   extra_data       per-target override of the shared data dirs
 #
 # The desktop app is the Go app (desktop/); LitoEngine is the AI engine
@@ -34,7 +38,8 @@ targets:
     entry_point: server.py
     console: true
     onefile: false
-    extra_data: [checkpoints, src, data, extensions, desktop/ui]
+    extra_data: [src, data, extensions, desktop/ui]
+    extra_files: [lito-chat.gguf]
 
 # Platform-specific settings
 # windows:
@@ -53,14 +58,14 @@ targets:
 dist_dir: dist
 build_dir: build_temp
 
-# Training configuration (used by CI/CD)
+# Model training (CI runs train_big.py + export_gguf.py to produce
+# lito-chat.gguf; the numbers below document the default recipe)
 training:
-  epochs: 30
-  batch_size: 4
-  seq_len: 64
-  d_model: 128
-  n_layers: 4
-  n_heads: 4
-  d_ff: 512
-  vocab_size: 2048
-  learning_rate: 0.0003
+  steps: 1600
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  n_ff: 672
+  ctx: 512
+  batch: 12
+  vocab_size: 4096
