@@ -3,23 +3,38 @@
 Train a real from-scratch chat model (llama architecture) and export it
 to GGUF for llama.cpp / LM Studio / Ollama.
 
-    python train_big.py                  # default: ~6.8M params, Muon
-    python train_big.py --steps 2000     # train longer for better quality
-    python export_gguf.py                # checkpoint -> lito-chat.gguf
+    python train_big.py                   # 5,721,344 params, ~1h on 2 cores
+    python train_big.py --max_minutes 90  # or just give it a time budget
+    python export_gguf.py                 # checkpoint -> lito-chat.gguf
+    python tools/chat_eval.py             # grade the result
 
-The model is a genuine llama-architecture transformer trained from random
-initialization on a quality corpus: ~52k instruction/response pairs with
-GPT-4-quality answers (Stanford Alpaca prompts re-answered by GPT-4,
-formatted as ChatML), TinyStories (GPT-4 written simple-English stories -
-the data that famously lets tiny models speak coherently) and public-
-domain prose for diversity. Everything - tokenizer (GPT-2-style byte-
-level BPE), training, GGUF export - is implemented in this repo, no
-pretrained weights.
+The model is a genuine llama-architecture transformer trained from
+random initialization on a corpus built for what a few-million-parameter
+model can really learn:
 
-Fast training: hidden matrices are optimized with Muon (momentum +
-Newton-Schulz orthogonalization - roughly 1.5-2x more learning per token
-than AdamW at this scale); embeddings and norms use AdamW. A small
-held-out split reports validation loss while training.
+  * the conversation core (chatdata.py) - greetings, who it is, what it
+    can do, thanks, goodbyes, small sums, capitals, everyday facts -
+    because "hello" is the first thing anyone types;
+  * TinyStories (GPT-4 written simple-English stories - the data that
+    famously lets tiny models speak coherently);
+  * Stanford Alpaca prompts re-answered by GPT-4, filtered to short
+    prose answers (long markdown lists teach a tiny model the shape of
+    a list and nothing to put in it).
+
+Everything - tokenizer (GPT-2-style byte-level BPE), training, GGUF
+export - is implemented in this repo, no pretrained weights.
+
+Fast training, same parameter count:
+  * Muon on the hidden matrices (momentum + Newton-Schulz
+    orthogonalization) - markedly more learning per token than AdamW;
+  * torch's fused attention: 1,554 -> 2,300 tok/s on two CPU cores;
+  * a small init (N(0, 0.02), GPT-2 residual scaling) instead of torch's
+    N(0, 1) embeddings, which start a tied-head model at loss 242;
+  * tokenization parallelised across cores;
+  * --max_minutes: the cosine schedule follows the clock as well as the
+    step count, so a time-budgeted run still ends fully annealed;
+  * data annealing onto the conversation core at the end of the run.
+A small held-out split reports validation loss while training.
 
 The architecture deliberately matches llama.cpp's "llama" arch exactly
 (RMSNorm, RoPE, SwiGLU, tied embeddings), so the export runs offline in

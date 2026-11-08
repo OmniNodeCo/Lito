@@ -176,9 +176,19 @@ class LitoServer:
         if cmd == '/extensions':
             return self.extensions_text(args)
         if cmd == '/generate':
+            # Raw model output, bypassing the knowledge base - this is
+            # how you test the GGUF itself. The quality verdict is
+            # appended so it is obvious when the model (not the app) is
+            # the thing producing nonsense.
             if brain and brain.loaded and args:
                 out = brain._generate_with_model(args, max_tokens=100)
-                return out or '(no output)'
+                if not out:
+                    return '(no output)'
+                try:
+                    from src.quality import describe
+                    return f'{out}\n\n[{describe(out, brain.dictionary)}]'
+                except Exception:
+                    return out
             return 'Neural generation unavailable (model not loaded).'
         reply = self.ext.handle_command(cmd, args, brain)
         if reply:
