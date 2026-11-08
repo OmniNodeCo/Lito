@@ -194,7 +194,7 @@ MAX_INPUT_CHARS = 160
 _LIST_RE = re.compile(r'^\s*(\d+[.)]|[-*\u2022])\s', re.M)
 # how many times the conversation core is regenerated (each pass pairs
 # the same intents with different phrasings/answers)
-CHAT_CORE_PASSES = 3
+CHAT_CORE_PASSES = 4
 
 
 def _instruction_docs(rng):
@@ -227,7 +227,7 @@ def _instruction_docs(rng):
     return docs
 
 
-def build_documents():
+def build_documents(with_kinds=False):
     """All training documents as ChatML-formatted strings.
 
     Three ingredients, in deliberate proportion:
@@ -240,7 +240,7 @@ def build_documents():
          question instead of continuing a story.
     """
     rng = random.Random(13)
-    docs = []
+    docs = []          # (text, kind)
 
     # 1. conversation core
     try:
@@ -250,7 +250,7 @@ def build_documents():
             core.extend(build_chat_core(random.Random(100 + i)))
         print(f'conversation core: {len(core):,} dialogues '
               f'({CHAT_CORE_PASSES} passes)')
-        docs.extend(core)
+        docs.extend((d, 'core') for d in core)
     except ImportError:
         print('WARNING: chatdata.py missing - no conversation core')
 
@@ -260,18 +260,18 @@ def build_documents():
         text = open(ts_path, encoding='utf-8', errors='ignore').read()
         story_docs = _story_docs(text, rng)
         print(f'story data: {len(story_docs):,} TinyStories docs')
-        docs.extend(story_docs)
+        docs.extend((d, 'story') for d in story_docs)
     else:
         print('WARNING: no TinyStories - coherence will suffer')
 
     # 3. instruction following
-    docs.extend(_instruction_docs(rng))
+    docs.extend((d, 'instruct') for d in _instruction_docs(rng))
 
     rng.shuffle(docs)
-    chars = sum(len(d) for d in docs)
+    chars = sum(len(d) for d, _ in docs)
     print(f'corpus: {len(docs):,} documents, {chars:,} characters '
           f'(~{chars // 4:,} tokens)')
-    return docs
+    return docs if with_kinds else [d for d, _ in docs]
 
 
 # ----------------------------------------------------------------------
@@ -562,6 +562,21 @@ class Muon:
 # Training
 # ----------------------------------------------------------------------
 
+def core_fraction(done, anneal=0.3, mix=0.5):
+    """Share of batches drawn from the conversation core.
+
+    `done` is how far training has progressed (0..1). The core stays out
+    of the way for most of the run and then ramps in over the last
+    `anneal` of it, up to `mix`. Annealing on the data a model will
+    actually be asked about is the cheapest quality win there is: the
+    last thing it learns is the first thing a user types.
+    """
+    if anneal <= 0 or mix <= 0:
+        return 0.0
+    into = (done - (1.0 - anneal)) / anneal
+    return max(0.0, min(1.0, into)) * mix
+
+
 _WORKER_TOK = None
 
 
@@ -653,6 +668,12 @@ def main():
     parser.add_argument('--compile', action='store_true',
                         help='torch.compile the model (needs a C++ '
                              'toolchain; falls back to eager mode)')
+    parser.add_argument('--core_anneal', type=float, default=0.3,
+                        help='fraction of training at the end that mixes '
+                             'in the conversation core (0 = off)')
+    parser.add_argument('--core_mix', type=float, default=0.5,
+                        help='peak share of batches drawn from the '
+                             'conversation core during the anneal')
     parser.add_argument('--max_minutes', type=float, default=0,
                         help='stop early and save once this much wall '
                              'clock has passed (0 = no limit)')
@@ -671,7 +692,8 @@ def main():
 
     # 1. Corpus ------------------------------------------------------
     fetch_corpus()
-    docs = build_documents()
+    items = build_documents(with_kinds=True)
+    docs = [d for d, _ in items]
 
     # 2. Tokenizer ---------------------------------------------------
     tok_path = os.path.join(args.model_dir, 'bpe_tokenizer.json')
@@ -688,7 +710,9 @@ def main():
     # 3. Tokenize (train + held-out val split) ------------------------
     bin_path = os.path.join(args.model_dir, 'tokens.bin')
     val_path = os.path.join(args.model_dir, 'tokens_val.bin')
-    if not (os.path.exists(bin_path) and os.path.exists(val_path)):
+    core_path = os.path.join(args.model_dir, 'tokens_core.bin')
+    if not (os.path.exists(bin_path) and os.path.exists(val_path)
+            and os.path.exists(core_path)):
         workers = max(1, (os.cpu_count() or 2))
         print(f'tokenizing the corpus ({workers} workers)...')
         t_tok = time.time()
@@ -696,17 +720,26 @@ def main():
         val_docs = set(rng.sample(range(len(docs)),
                                   max(1, int(0.005 * len(docs)))))
         eos = tok.encode('<|im_end|>')[0]
-        ids, val_ids = [], []
+        ids, val_ids, core_ids = [], [], []
         for i, seq in enumerate(encode_documents(docs, tok_path, workers)):
             out = val_ids if i in val_docs else ids
             out.extend(seq)
             out.append(eos)
+            if items[i][1] == 'core' and i not in val_docs:
+                core_ids.extend(seq)
+                core_ids.append(eos)
         np.array(ids, dtype=np.uint16).tofile(bin_path)
         np.array(val_ids, dtype=np.uint16).tofile(val_path)
-        print(f'tokens: {len(ids):,} train, {len(val_ids):,} val '
+        np.array(core_ids, dtype=np.uint16).tofile(core_path)
+        print(f'tokens: {len(ids):,} train, {len(val_ids):,} val, '
+              f'{len(core_ids):,} conversation core '
               f'in {time.time() - t_tok:.0f}s')
     tokens = np.memmap(bin_path, dtype=np.uint16, mode='r')
     val_tokens = np.memmap(val_path, dtype=np.uint16, mode='r')
+    core_tokens = (np.memmap(core_path, dtype=np.uint16, mode='r')
+                   if os.path.exists(core_path) else None)
+    if core_tokens is not None and len(core_tokens) < args.ctx + 2:
+        core_tokens = None
 
     # 4. Model -------------------------------------------------------
     config = {
@@ -804,11 +837,23 @@ def main():
             opt.zero_grad(set_to_none=True)
         # accumulate micro-batches of random windows from the token stream
         loss_val = 0.0
+        core_frac = 0.0
+        if core_tokens is not None:
+            # Data annealing: the end of training is spent increasingly
+            # on the conversation core, so what a user types first is
+            # what the model saw last (and learned best).
+            done = (step + 1) / max(1, args.steps)
+            if args.max_minutes:
+                done = max(done, (time.time() - started)
+                           / (args.max_minutes * 60))
+            core_frac = core_fraction(done, args.core_anneal, args.core_mix)
         for _ in range(args.accum):
-            ix = np.random.randint(0, len(tokens) - args.ctx - 1,
+            stream = (core_tokens if np.random.random() < core_frac
+                      else tokens)
+            ix = np.random.randint(0, len(stream) - args.ctx - 1,
                                    size=args.batch)
-            x = np.stack([tokens[i:i + args.ctx] for i in ix]).astype(np.int64)
-            y = np.stack([tokens[i + 1:i + args.ctx + 1]
+            x = np.stack([stream[i:i + args.ctx] for i in ix]).astype(np.int64)
+            y = np.stack([stream[i + 1:i + args.ctx + 1]
                           for i in ix]).astype(np.int64)
             xt, yt = torch.from_numpy(x), torch.from_numpy(y)
             logits = model(xt)
@@ -824,10 +869,11 @@ def main():
         if step % 20 == 0 or step == args.steps - 1:
             elapsed = time.time() - started
             muon_lr = optimizers[0].param_groups[0]['lr']
+            core_note = f' | core {core_frac:.0%}' if core_frac else ''
             print(f'step {step:5d} | loss {loss_val:.4f} | lr {muon_lr:.2e} '
                   f'| {tokens_seen / elapsed:,.0f} tok/s | '
-                  f'eta {elapsed / (step + 1) * (args.steps - step - 1) / 60:.1f} min',
-                  flush=True)
+                  f'eta {elapsed / (step + 1) * (args.steps - step - 1) / 60:.1f} min'
+                  f'{core_note}', flush=True)
         if (step + 1) % 100 == 0 or step == args.steps - 1:
             v = eval_val(model, val_tokens, args.ctx)
             print(f'  val loss {v:.4f} @ step {resumed_from + step + 1}',

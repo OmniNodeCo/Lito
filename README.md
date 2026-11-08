@@ -354,6 +354,7 @@ reproduces the throughput rows):
 | **init fix** | torch's default `nn.Embedding` init is N(0, 1), which with a tied head starts training at loss **242** instead of ln(4096) = 8.3. N(0, 0.02) plus GPT-2 residual scaling: val loss at step 100 **4.7974 → 3.7726** on an otherwise identical run |
 | **parallel tokenization** | the BPE pass runs one worker per core: 7.87M tokens in **85s** |
 | **`--max_minutes`** | the cosine schedule follows whichever is further along, steps or wall clock, so "train for 90 minutes" ends fully annealed on any machine |
+| **data annealing** | the last 30% of training mixes the conversation core in (up to half the batches), so the last thing the model learns is the first thing a user types. `--core_anneal` / `--core_mix` |
 | **`--fused`** (optional) | packs Q/K/V and gate/up into single GEMMs — identical parameters and maths (tested both ways), a win on GPUs, measured neutral on 2 CPU cores |
 
 `--optimizer adamw`, `--no_sdpa` and `--compile` switch the pieces for

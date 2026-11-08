@@ -784,6 +784,21 @@ def chat_eval_rejects_word_salad_and_accepts_real_answers():
     assert 'hello' in prompts and 'who are you' in prompts
 
 
+@test
+def core_anneal_ramps_only_at_the_end():
+    """The conversation core must not crowd out the main corpus early;
+    it ramps in over the last stretch of training."""
+    from train_big import core_fraction
+    assert core_fraction(0.0) == 0.0
+    assert core_fraction(0.5) == 0.0
+    assert core_fraction(0.70, anneal=0.3, mix=0.5) == 0.0
+    mid = core_fraction(0.85, anneal=0.3, mix=0.5)
+    assert 0.2 < mid < 0.3, mid
+    assert abs(core_fraction(1.0, anneal=0.3, mix=0.5) - 0.5) < 1e-9
+    assert core_fraction(1.0, anneal=0.0) == 0.0      # switched off
+    assert core_fraction(2.0, anneal=0.3, mix=0.5) == 0.5   # clamped
+
+
 # ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------

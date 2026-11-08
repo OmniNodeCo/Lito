@@ -428,15 +428,18 @@ def _number_qa(rng):
                  '{a} minus {b}', 'subtract {b} from {a}']
     mul_forms = ['What is {a} times {b}?', 'what is {a} x {b}', '{a} * {b}',
                  '{a} times {b}', 'multiply {a} by {b}']
-    for a in range(0, 21):
-        for b in range(0, 21):
+    # Small range on purpose: a model that always gets 7 + 5 right is
+    # worth more than one that fumbles every sum up to 20. Fewer facts
+    # means each one is seen about twice as often in training.
+    for a in range(0, 13):
+        for b in range(0, 13):
             qa.append((rng.choice(add_forms).format(a=a, b=b),
                        f'{a} plus {b} is {a + b}.'))
             if a >= b:
                 qa.append((rng.choice(sub_forms).format(a=a, b=b),
                            f'{a} minus {b} is {a - b}.'))
-    for a in range(0, 13):
-        for b in range(0, 13):
+    for a in range(0, 11):
+        for b in range(0, 11):
             qa.append((rng.choice(mul_forms).format(a=a, b=b),
                        f'{a} times {b} is {a * b}.'))
     for a in (2, 3, 4, 5, 6, 7, 8, 9, 10):
