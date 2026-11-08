@@ -952,6 +952,43 @@ def version_matches_src():
 
 
 # ----------------------------------------------------------------------
+# Neural routing and the word-salad guard (v1.2.6)
+# ----------------------------------------------------------------------
+
+@test
+def story_requests_are_routed_to_the_model():
+    """'tell me a story' is what the neural model is for - but only its
+    output is used, and only when it reads like English."""
+    brain = get_brain()
+    for ask in ('tell me a story', 'tell me a bedtime story',
+                'write a story about a dog', 'can you tell me a tale'):
+        clause = brain.analyzer.analyze(ask).clauses[0]
+        assert brain._STORY_RE.search(clause.text), ask
+    for not_a_story in ('what is a story', 'i read a story yesterday',
+                        'spell story'):
+        clause = brain.analyzer.analyze(not_a_story).clauses[0]
+        assert not brain._STORY_RE.search(clause.text), not_a_story
+
+
+@test
+def word_salad_never_reaches_the_user():
+    """The quality judge the app shares with the release gate."""
+    from src.quality import looks_like_english, known_word_ratio
+    salad = ('Use strangespace: Establs can help prevent the casual or '
+             'chain in the atmosphere. A trophh, and we can take a cumin '
+             'to do everything! Environmental s of melurgies.')
+    ok, why = looks_like_english(salad)
+    assert not ok and 'invented' in why, (ok, why)
+    ratio, judged = known_word_ratio('Hello! How can I help you today?')
+    assert ratio == 1.0 and judged >= 2, (ratio, judged)
+    for good in ("I'm Lito, a small AI assistant.",
+                 'The capital of France is Paris.',
+                 'Once upon a time there was a little dog named Max.'):
+        ok, why = looks_like_english(good)
+        assert ok, f'{good!r} rejected as {why}'
+
+
+# ----------------------------------------------------------------------
 # API server + Go desktop app (v1.2.0)
 # ----------------------------------------------------------------------
 

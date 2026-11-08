@@ -324,9 +324,23 @@ class AIBrain:
     # Clause routing
     # ------------------------------------------------------------------
 
+    # "tell me a story", "write a story about a dog", "make up a tale"
+    _STORY_RE = re.compile(
+        r'^\s*(please\s+)?((can|could|will|would)\s+you\s+)?(please\s+)?'
+        r'(tell|write|make up|give me|read)\b[^.?!]*\b'
+        r'(story|stories|tale|fairy ?tale|bedtime)\b', re.I)
+
     def _answer_clause(self, clause: Clause, analysis: Analysis) -> str:
         """Produce the best answer for a single clause."""
         text = clause.text
+
+        # -- Story requests: this is what the neural model is best at ----
+        if self.loaded and self._STORY_RE.search(text):
+            story = self._generate_with_model(text, max_tokens=180)
+            readable, _why = looks_like_english(story, self.dictionary)
+            if readable and len(story) > 60:
+                self._turn_answered = True
+                return story
 
         # -- Small talk & identity --------------------------------------
         small = self._match_small_talk(clause)
