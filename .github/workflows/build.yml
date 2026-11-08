@@ -35,11 +35,35 @@ jobs:
       - name: Run GGUF pipeline tests (BPE, GGUF, numpy engine, exporter)
         run: python tests/test_gguf_pipeline.py
 
+      # The corpus is immutable (pinned blob SHAs), so it is cached
+      # across builds; the tokenizer and token stream are cached on the
+      # exact hash of the code that produces them, so any data change
+      # rebuilds them.
+      - name: Cache training corpus
+        uses: actions/cache@v4
+        with:
+          path: data/bigcorpus
+          key: bigcorpus-v2-${{ hashFiles('train_big.py') }}
+          restore-keys: bigcorpus-v2-
+
+      - name: Cache tokenizer and token stream
+        uses: actions/cache@v4
+        with:
+          path: |
+            checkpoints-big/bpe_tokenizer.json
+            checkpoints-big/tokens.bin
+            checkpoints-big/tokens_val.bin
+          key: tokens-v2-${{ hashFiles('train_big.py', 'chatdata.py', 'src/bpe.py') }}
+
+      # Time-budgeted training: the cosine schedule follows whichever is
+      # further along, steps or wall clock, so the run always finishes
+      # fully annealed no matter how fast the runner is.
       - name: Train the GGUF chat model from scratch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python train_big.py --steps 1600 --d_model 256 --n_layers 6 \
+          python train_big.py --steps 4000 --max_minutes 90 \
+            --d_model 256 --n_layers 6 \
             --n_heads 8 --n_ff 672 --ctx 512 --batch 12 --vocab_size 4096 \
             --optimizer muon --muon_lr 0.04 --model_dir checkpoints-big
 
@@ -60,6 +84,11 @@ jobs:
           print('chat smoke test reply:', repr(reply))
           assert engine._param_count > 1_000_000
           EOF
+
+      # The gate that stops a release where "hello" comes back as word
+      # salad: real prompts, graded answers.
+      - name: Chat quality gate (greetings, identity, facts, stories)
+        run: python tools/chat_eval.py --min-score 0.6 -v
 
       - name: Test chat inference through the brain
         run: |

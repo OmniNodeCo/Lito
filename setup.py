@@ -7,7 +7,7 @@ setup(
                  'Chats via its own numpy GGUF engine.'),
     author='Lito',
     packages=find_packages(),
-    py_modules=['server', 'train_big', 'export_gguf'],
+    py_modules=['server', 'train_big', 'export_gguf', 'chatdata'],
     include_package_data=True,
     package_data={'': ['extensions/*.py']},
     python_requires='>=3.8',

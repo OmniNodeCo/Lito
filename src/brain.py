@@ -23,6 +23,7 @@ import numpy as np
 from .llama_np import LlamaEngine
 from .dataset import TrainingData
 from .dictionary import EnglishDictionary, WordEntry
+from .quality import looks_like_english
 from .nlp import (Analyzer, Clause, Analysis, BM25Index, split_sentences,
                   tokenize, IS_WORD_PATTERNS)
 from .search import WebSearch, SearchResult
@@ -1089,11 +1090,12 @@ class AIBrain:
                 # Reject the model parroting the chat format back at us
                 if any(m in low for m in ('user:', 'ai:', 'question:', 'answer:')):
                     return response
-                # Reject word salad: mostly short function words adds nothing
-                alpha = re.findall(r'[a-z]+', low)
-                long_words = [w for w in alpha if len(w) >= 4]
-                if len(long_words) < max(2, 0.3 * len(alpha)):
+                # Reject word salad - invented words, fragments, list
+                # soup. Same judge the release gate in CI uses.
+                readable, _why = looks_like_english(neural, self.dictionary)
+                if not readable:
                     return response
+                alpha = re.findall(r'[a-z]+', low)
                 # Require real topical overlap with what was asked
                 focus = {w for c in analysis.clauses for w in c.focus}
                 neural_words = set(alpha)

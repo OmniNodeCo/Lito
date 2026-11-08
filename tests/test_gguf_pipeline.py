@@ -587,6 +587,204 @@ def engine_matches_torch_reference():
 
 
 # ----------------------------------------------------------------------
+# Training speed/quality fixes (same parameters, better and faster)
+# ----------------------------------------------------------------------
+
+@test
+def model_init_starts_at_uniform_loss():
+    """A freshly built model must start at about ln(vocab).
+
+    torch's default N(0, 1) embedding init with a tied head starts
+    training at loss ~240 instead of ~8.3 and wastes hundreds of steps
+    just shrinking the logits.
+    """
+    if _skip_if_no_torch():
+        return
+    import math
+    from train_big import build_model
+    torch.manual_seed(0)
+    vocab = 512
+    cfg = {'d_model': 64, 'n_layers': 4, 'n_heads': 4, 'n_ff': 128,
+           'ctx': 32, 'vocab_size': vocab}
+    model = build_model(cfg, vocab)
+    ids = torch.randint(0, vocab, (4, 32))
+    with torch.no_grad():
+        logits = model(ids)
+    loss = torch.nn.functional.cross_entropy(
+        logits.view(-1, vocab), torch.randint(0, vocab, (4 * 32,))).item()
+    uniform = math.log(vocab)
+    assert abs(loss - uniform) < 1.0, f'init loss {loss:.2f} vs {uniform:.2f}'
+
+
+@test
+def fused_and_split_layouts_are_the_same_model():
+    """Fusing Q/K/V (and gate/up) is a layout change only: identical
+    parameter count, identical outputs, lossless round trip."""
+    if _skip_if_no_torch():
+        return
+    from train_big import build_model, split_state_dict, fuse_state_dict
+    vocab = 128
+    cfg = {'d_model': 32, 'n_layers': 2, 'n_heads': 4, 'n_ff': 64,
+           'ctx': 16, 'vocab_size': vocab}
+    torch.manual_seed(5)
+    fused = build_model(cfg, vocab, fused=True)
+    torch.manual_seed(5)
+    split = build_model(cfg, vocab, fused=False)
+    assert (sum(p.numel() for p in fused.parameters())
+            == sum(p.numel() for p in split.parameters()))
+    # the split checkpoint of the fused model reproduces it exactly
+    split.load_state_dict(split_state_dict(fused.state_dict(), cfg))
+    ids = torch.randint(0, vocab, (2, 16))
+    with torch.no_grad():
+        a, b = fused(ids), split(ids)
+    assert torch.allclose(a, b, atol=1e-4), (a - b).abs().max().item()
+    # and back again, bit for bit
+    again = build_model(cfg, vocab, fused=True)
+    again.load_state_dict(fuse_state_dict(split_state_dict(
+        fused.state_dict(), cfg)))
+    with torch.no_grad():
+        c = again(ids)
+    assert torch.equal(a, c)
+
+
+@test
+def sdpa_matches_hand_written_attention():
+    """The fast attention path computes the same function as the
+    original hand-rolled matmul + mask + softmax."""
+    if _skip_if_no_torch():
+        return
+    from train_big import build_model
+    vocab = 128
+    cfg = {'d_model': 32, 'n_layers': 2, 'n_heads': 4, 'n_ff': 64,
+           'ctx': 24, 'vocab_size': vocab}
+    torch.manual_seed(7)
+    fast = build_model(cfg, vocab, fused=False, sdpa=True)
+    slow = build_model(cfg, vocab, fused=False, sdpa=False)
+    slow.load_state_dict(fast.state_dict())
+    ids = torch.randint(0, vocab, (2, 24))
+    with torch.no_grad():
+        a, b = fast(ids), slow(ids)
+    assert torch.allclose(a, b, atol=1e-4), (a - b).abs().max().item()
+
+
+@test
+def checkpoints_stay_in_the_llama_layout():
+    """Whatever layout training used, the checkpoint on disk is always
+    the split layout the exporter and the numpy engine read."""
+    if _skip_if_no_torch():
+        return
+    from train_big import build_model, save_checkpoint
+    tok = get_tokenizer()
+    cfg = {'d_model': 32, 'n_layers': 2, 'n_heads': 4, 'n_ff': 64,
+           'ctx': 16, 'vocab_size': tok.vocab_size}
+    model = build_model(cfg, tok.vocab_size, fused=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        tok.save(os.path.join(tmp, 'bpe_tokenizer.json'))
+        save_checkpoint(model, cfg, tmp, 1, 'bpe_tokenizer.json')
+        state = torch.load(os.path.join(tmp, 'checkpoint.pt'),
+                           map_location='cpu',
+                           weights_only=False)['state_dict']
+    keys = set(state)
+    for layer in range(cfg['n_layers']):
+        for name in ('wq', 'wk', 'wv', 'wo', 'w_gate', 'w_up', 'w_down'):
+            assert f'blocks.{layer}.{name}.weight' in keys, name
+    assert not any('wqkv' in k or 'gate_up' in k for k in keys)
+    assert not any(k.endswith('mask') for k in keys)
+
+
+# ----------------------------------------------------------------------
+# Conversation core (why "hello" works)
+# ----------------------------------------------------------------------
+
+@test
+def chat_core_teaches_greetings_and_identity():
+    import random as _random
+    from chatdata import build_chat_core
+    docs = build_chat_core(_random.Random(0))
+    assert len(docs) > 2000, len(docs)
+    joined = '\n'.join(docs).lower()
+    # the exact things a person types first must be in training
+    for probe in ('>hello<', '>hi<', '>hey<', '>who are you<',
+                  '>thanks<', '>bye<', '>what can you do?<'):
+        needle = f'<|im_start|>user\n{probe[1:-1]}<|im_end|>'
+        assert needle in joined, probe
+    assert 'lito' in joined
+    # every document is well formed ChatML with a non-empty answer
+    for doc in docs[:500]:
+        assert doc.count('<|im_start|>') == doc.count('<|im_end|>')
+        assert doc.endswith('<|im_end|>')
+        for turn in doc.split('<|im_start|>assistant\n')[1:]:
+            assert len(turn.split('<|im_end|>')[0].strip()) > 2
+
+
+@test
+def chat_core_arithmetic_and_facts_are_correct():
+    """Training data must not teach wrong answers."""
+    import random as _random
+    import re as _re
+    from chatdata import build_chat_core
+    docs = build_chat_core(_random.Random(3))
+    checked = 0
+    for doc in docs:
+        for match in _re.finditer(r'(\d+) plus (\d+) is (\d+)\.', doc):
+            a, b, c = (int(g) for g in match.groups())
+            assert a + b == c, match.group(0)
+            checked += 1
+        for match in _re.finditer(r'(\d+) times (\d+) is (\d+)\.', doc):
+            a, b, c = (int(g) for g in match.groups())
+            assert a * b == c, match.group(0)
+            checked += 1
+    assert checked > 500, checked
+    joined = '\n'.join(docs)
+    assert 'The capital of France is Paris.' in joined
+
+
+@test
+def instruction_filter_drops_list_shaped_answers():
+    """Long markdown-list answers are what a tiny model turns into
+    word salad with bullet points, so they are filtered out."""
+    from train_big import _LIST_RE, MAX_ANSWER_CHARS
+    assert _LIST_RE.search('1. first\n2. second')
+    assert _LIST_RE.search('- a bullet')
+    assert _LIST_RE.search('Verse 2:\n\n1. Stay the Civil')
+    assert not _LIST_RE.search('Paris is the capital of France.')
+    assert 200 < MAX_ANSWER_CHARS < 1000
+
+
+@test
+def chat_eval_rejects_word_salad_and_accepts_real_answers():
+    """The release gate must fail on the kind of output a broken model
+    produces, and pass on ordinary replies."""
+    sys.path.insert(0, os.path.join(REPO_ROOT, 'tools'))
+    from src.quality import looks_like_english
+    from chat_eval import PROBES
+    salad = ('- Noice:\n- Like\n- Two Creating\n- Priorit\n- Feeder\n'
+             'Verse 2:\n1. Stay the Civil\n'
+             '2. Add a mysterious cave, Are youn\'t yet,\n'
+             '3. Water tomorrow: Wick is a fertilizen, which is often '
+             'found in the middle.')
+    ok, _ = looks_like_english(salad)
+    assert not ok, 'word salad slipped through the gate'
+    ok, why = looks_like_english('Hello! How can I help you today?')
+    assert ok, why
+    ok, _ = looks_like_english('the the the the the the the the the the')
+    assert not ok, 'repetition slipped through'
+    # invented words are caught even without list formatting
+    ok, why = looks_like_english(
+        'Wick is a fertilizen and Minsewall the melurgies of strangespace '
+        'can take a trophh to the mutro of overling letturs.')
+    assert not ok, 'invented words slipped through'
+    # and ordinary replies are not rejected
+    for good in ("I'm Lito, a small AI assistant trained from scratch.",
+                 '7 plus 5 is 12.',
+                 'Once upon a time there was a cat named Mia.'):
+        ok, why = looks_like_english(good)
+        assert ok, f'{good!r} rejected: {why}'
+    prompts = [p[0] for p in PROBES]
+    assert 'hello' in prompts and 'who are you' in prompts
+
+
+# ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------
 

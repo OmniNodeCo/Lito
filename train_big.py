@@ -54,8 +54,6 @@ TARBALL_SOURCES = [
     # fallback instruction data if the GPT-4-answered set is unreachable
     ('https://codeload.github.com/tatsu-lab/stanford_alpaca/tar.gz/HEAD',
      'alpaca_data.json', 'alpaca_data.json'),
-    ('https://codeload.github.com/karpathy/char-rnn/tar.gz/HEAD',
-     'data/tinyshakespeare/input.txt', 'shakespeare.txt'),
 ]
 
 # Single-file sources fetched through the GitHub blobs API (content is
@@ -186,33 +184,77 @@ def _story_docs(text, rng):
     return docs
 
 
-def build_documents():
-    """All training documents as ChatML-formatted strings."""
-    rng = random.Random(13)
+# An instruction answer longer than this, or shaped like a markdown
+# list, teaches a few-million-parameter model the SHAPE of a long list
+# without any of the knowledge needed to fill it in - which is exactly
+# how a tiny model ends up answering "hello" with a numbered list of
+# nonsense. Short prose answers are what it can actually learn.
+MAX_ANSWER_CHARS = 420
+MAX_INPUT_CHARS = 160
+_LIST_RE = re.compile(r'^\s*(\d+[.)]|[-*\u2022])\s', re.M)
+# how many times the conversation core is regenerated (each pass pairs
+# the same intents with different phrasings/answers)
+CHAT_CORE_PASSES = 3
 
-    # instruction data: prefer the GPT-4-answered set
+
+def _instruction_docs(rng):
+    """Alpaca-style instruction pairs, filtered to what a small model can
+    actually learn: short prose answers, no markdown lists, no code."""
     gpt4_path = os.path.join(DATA_DIR, 'alpaca_gpt4_data.json')
     alpaca_path = os.path.join(DATA_DIR, 'alpaca_data.json')
-    src = gpt4_path if os.path.exists(gpt4_path) else alpaca_path
-    if os.path.exists(src):
-        print(f'instruction data: {os.path.basename(src)}')
-        with open(src) as f:
-            rows = json.load(f)
-        docs = []
-        for row in rows:
-            instruction = (row.get('instruction') or '').strip()
-            extra = (row.get('input') or '').strip()
-            output = (row.get('output') or '').strip()
-            if not instruction or not output:
-                continue
-            user = instruction + (f'\n{extra}' if extra else '')
-            docs.append(
-                f'<|im_start|>user\n{user}<|im_end|>\n'
-                f'<|im_start|>assistant\n{output}<|im_end|>')
-    else:
-        docs = []
+    src_path = gpt4_path if os.path.exists(gpt4_path) else alpaca_path
+    if not os.path.exists(src_path):
+        return []
+    with open(src_path) as f:
+        rows = json.load(f)
+    docs, dropped = [], 0
+    for row in rows:
+        instruction = (row.get('instruction') or '').strip()
+        extra = (row.get('input') or '').strip()
+        output = (row.get('output') or '').strip()
+        if not instruction or not output:
+            continue
+        if (len(output) > MAX_ANSWER_CHARS or len(extra) > MAX_INPUT_CHARS
+                or '```' in output or _LIST_RE.search(output)):
+            dropped += 1
+            continue
+        user = instruction + (f'\n{extra}' if extra else '')
+        docs.append(f'<|im_start|>user\n{user}<|im_end|>\n'
+                    f'<|im_start|>assistant\n{output}<|im_end|>')
+    print(f'instruction data: {os.path.basename(src_path)} -> '
+          f'{len(docs):,} short-answer pairs ({dropped:,} long/list/code '
+          f'answers dropped)')
+    return docs
 
-    # TinyStories: simple, coherent English (the TinyStories paper's data)
+
+def build_documents():
+    """All training documents as ChatML-formatted strings.
+
+    Three ingredients, in deliberate proportion:
+      1. the conversation core (chatdata.py) - what people actually say
+         first: greetings, "who are you", thanks, small sums. Repeated so
+         the model learns these cold.
+      2. TinyStories - simple, correct English; this is what teaches a
+         tiny model to form sentences at all.
+      3. short instruction/answer pairs - the ability to answer a
+         question instead of continuing a story.
+    """
+    rng = random.Random(13)
+    docs = []
+
+    # 1. conversation core
+    try:
+        from chatdata import build_chat_core
+        core = []
+        for i in range(CHAT_CORE_PASSES):
+            core.extend(build_chat_core(random.Random(100 + i)))
+        print(f'conversation core: {len(core):,} dialogues '
+              f'({CHAT_CORE_PASSES} passes)')
+        docs.extend(core)
+    except ImportError:
+        print('WARNING: chatdata.py missing - no conversation core')
+
+    # 2. TinyStories: simple, coherent English (the TinyStories paper's data)
     ts_path = os.path.join(DATA_DIR, 'tinystories.txt')
     if os.path.exists(ts_path):
         text = open(ts_path, encoding='utf-8', errors='ignore').read()
@@ -222,23 +264,13 @@ def build_documents():
     else:
         print('WARNING: no TinyStories - coherence will suffer')
 
-    # public-domain prose, chunked into ~1KB paragraphs as neutral documents
-    shk_path = os.path.join(DATA_DIR, 'shakespeare.txt')
-    if os.path.exists(shk_path):
-        prose = open(shk_path, encoding='utf-8', errors='ignore').read()
-        chunk, size = [], 0
-        for para in prose.split('\n\n'):
-            para = para.strip()
-            if not para:
-                continue
-            chunk.append(para)
-            size += len(para)
-            if size > 1000:
-                docs.append('<|im_start|>system\nContinue this text.<|im_end|>\n'
-                            f'<|im_start|>assistant\n{para}<|im_end|>')
-                chunk, size = [], 0
+    # 3. instruction following
+    docs.extend(_instruction_docs(rng))
 
     rng.shuffle(docs)
+    chars = sum(len(d) for d in docs)
+    print(f'corpus: {len(docs):,} documents, {chars:,} characters '
+          f'(~{chars // 4:,} tokens)')
     return docs
 
 
@@ -246,9 +278,20 @@ def build_documents():
 # Model (llama architecture, trained from scratch)
 # ----------------------------------------------------------------------
 
-def build_model(config, vocab_size):
+def build_model(config, vocab_size, fused=True, sdpa=True):
     """The exact architecture llama.cpp's 'llama' arch expects:
-    RMSNorm (pre-norm), RoPE, SwiGLU FFN, tied embeddings."""
+    RMSNorm (pre-norm), RoPE, SwiGLU FFN, tied embeddings.
+
+    `fused` packs Q/K/V into one weight matrix and gate/up into another.
+    That is purely a training-time memory layout: identical parameter
+    count, identical maths, but each block runs 2 large GEMMs instead of
+    5 small ones, which a CPU executes markedly faster. Checkpoints are
+    always written in the split llama.cpp layout (see split_state_dict),
+    so the exporter, the numpy engine and GGUF stay unchanged.
+
+    `sdpa` uses torch's fused scaled-dot-product attention instead of a
+    hand-rolled matmul + mask + softmax.
+    """
     import torch
     import torch.nn as nn
     import torch.nn.functional as F
@@ -286,49 +329,95 @@ def build_model(config, vocab_size):
         return torch.stack((r1, r2), dim=-1).flatten(-2)
 
     class Block(nn.Module):
-        def __init__(self, cfg):
+        def __init__(self, cfg, fused=True, sdpa=True):
             super().__init__()
             d = cfg['d_model']
+            ff = cfg['n_ff']
             self.n_heads = cfg['n_heads']
+            self.n_ff = ff
+            self.fused = fused
+            self.sdpa = sdpa
             self.attn_norm = RMSNorm(d)
-            self.wq = nn.Linear(d, d, bias=False)
-            self.wk = nn.Linear(d, d, bias=False)
-            self.wv = nn.Linear(d, d, bias=False)
+            if fused:
+                self.wqkv = nn.Linear(d, 3 * d, bias=False)
+                # Muon orthogonalizes each of Q/K/V separately, exactly as
+                # it would with three independent matrices.
+                self.wqkv.weight._muon_chunks = 3
+            else:
+                self.wq = nn.Linear(d, d, bias=False)
+                self.wk = nn.Linear(d, d, bias=False)
+                self.wv = nn.Linear(d, d, bias=False)
             self.wo = nn.Linear(d, d, bias=False)
             self.ffn_norm = RMSNorm(d)
-            self.w_gate = nn.Linear(d, cfg['n_ff'], bias=False)
-            self.w_up = nn.Linear(d, cfg['n_ff'], bias=False)
-            self.w_down = nn.Linear(cfg['n_ff'], d, bias=False)
+            if fused:
+                self.w_gate_up = nn.Linear(d, 2 * ff, bias=False)
+                self.w_gate_up.weight._muon_chunks = 2
+            else:
+                self.w_gate = nn.Linear(d, ff, bias=False)
+                self.w_up = nn.Linear(d, ff, bias=False)
+            self.w_down = nn.Linear(ff, d, bias=False)
 
         def forward(self, x, cos, sin, mask):
             B, T, C = x.shape
-            hd = C // self.n_heads
+            n = self.n_heads
+            hd = C // n
             h = self.attn_norm(x)
-            q = apply_rope(self.wq(h).view(B, T, self.n_heads, hd).transpose(1, 2), cos, sin)
-            k = apply_rope(self.wk(h).view(B, T, self.n_heads, hd).transpose(1, 2), cos, sin)
-            v = self.wv(h).view(B, T, self.n_heads, hd).transpose(1, 2)
-            att = (q @ k.transpose(-2, -1)) / math.sqrt(hd)
-            att = att + mask
-            att = F.softmax(att, dim=-1)
-            y = (att @ v).transpose(1, 2).contiguous().view(B, T, C)
-            x = x + self.wo(y)
+            if self.fused:
+                q, k, v = self.wqkv(h).split(C, dim=2)
+            else:
+                q, k, v = self.wq(h), self.wk(h), self.wv(h)
+            q = apply_rope(q.view(B, T, n, hd).transpose(1, 2), cos, sin)
+            k = apply_rope(k.view(B, T, n, hd).transpose(1, 2), cos, sin)
+            v = v.view(B, T, n, hd).transpose(1, 2)
+            if self.sdpa:
+                y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            else:
+                att = (q @ k.transpose(-2, -1)) / math.sqrt(hd)
+                att = F.softmax(att + mask, dim=-1)
+                y = att @ v
+            x = x + self.wo(y.transpose(1, 2).reshape(B, T, C))
             h = self.ffn_norm(x)
-            x = x + self.w_down(F.silu(self.w_gate(h)) * self.w_up(h))
-            return x
+            if self.fused:
+                gate, up = self.w_gate_up(h).split(self.n_ff, dim=2)
+            else:
+                gate, up = self.w_gate(h), self.w_up(h)
+            return x + self.w_down(F.silu(gate) * up)
 
     class Llama(nn.Module):
-        def __init__(self, cfg, vocab_size):
+        def __init__(self, cfg, vocab_size, fused=True, sdpa=True):
             super().__init__()
             self.cfg = cfg
+            self.fused = fused
             self.embed = nn.Embedding(vocab_size, cfg['d_model'])
-            self.blocks = nn.ModuleList(Block(cfg) for _ in range(cfg['n_layers']))
+            self.blocks = nn.ModuleList(Block(cfg, fused, sdpa)
+                                        for _ in range(cfg['n_layers']))
             self.norm = RMSNorm(cfg['d_model'])
             self.head = nn.Linear(cfg['d_model'], vocab_size, bias=False)
             self.head.weight = self.embed.weight  # tied
+            # Proper small init. torch's default for nn.Embedding is
+            # N(0, 1), which with a tied head makes the logits ~50x too
+            # large: training starts at loss ~240 instead of ln(vocab)
+            # ~8.3 and burns hundreds of steps just shrinking them.
+            self.apply(self._init_weights)
+            # residual branches shrink with depth (GPT-2 style), so the
+            # signal through the residual stream stays unit-scale
+            res_std = 0.02 / math.sqrt(2 * cfg['n_layers'])
+            for block in self.blocks:
+                nn.init.normal_(block.wo.weight, mean=0.0, std=res_std)
+                nn.init.normal_(block.w_down.weight, mean=0.0, std=res_std)
             self._cos, self._sin = rope_cache(cfg['ctx'], cfg['d_model'] // cfg['n_heads'])
+            # not persistent: checkpoints stay layout-independent
             self.register_buffer('mask',
                                  torch.triu(torch.full((cfg['ctx'], cfg['ctx']),
-                                                       float('-inf')), diagonal=1))
+                                                       float('-inf')), diagonal=1),
+                                 persistent=False)
+
+        @staticmethod
+        def _init_weights(module):
+            if isinstance(module, (nn.Linear, nn.Embedding)):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                if getattr(module, 'bias', None) is not None:
+                    nn.init.zeros_(module.bias)
 
         def forward(self, ids):
             B, T = ids.shape
@@ -340,7 +429,53 @@ def build_model(config, vocab_size):
                 x = b(x, cos, sin, mask)
             return self.head(self.norm(x))
 
-    return Llama(config, vocab_size)
+    return Llama(config, vocab_size, fused, sdpa)
+
+
+def split_state_dict(sd, config):
+    """Fused training layout -> the split llama.cpp layout that
+    checkpoints, the GGUF exporter and the numpy engine expect."""
+    import torch
+    d, ff = config['d_model'], config['n_ff']
+    out = {}
+    for key, val in sd.items():
+        if key.endswith('wqkv.weight'):
+            base = key[:-len('wqkv.weight')]
+            q, k, v = torch.split(val, d, dim=0)
+            out[base + 'wq.weight'] = q.clone()
+            out[base + 'wk.weight'] = k.clone()
+            out[base + 'wv.weight'] = v.clone()
+        elif key.endswith('w_gate_up.weight'):
+            base = key[:-len('w_gate_up.weight')]
+            gate, up = torch.split(val, ff, dim=0)
+            out[base + 'w_gate.weight'] = gate.clone()
+            out[base + 'w_up.weight'] = up.clone()
+        else:
+            out[key] = val
+    return out
+
+
+def fuse_state_dict(sd):
+    """Split checkpoint layout -> the fused training layout."""
+    import torch
+    out = {}
+    for key, val in sd.items():
+        if key.endswith('wq.weight'):
+            base = key[:-len('wq.weight')]
+            out[base + 'wqkv.weight'] = torch.cat(
+                [sd[base + 'wq.weight'], sd[base + 'wk.weight'],
+                 sd[base + 'wv.weight']], dim=0)
+        elif key.endswith('wk.weight') or key.endswith('wv.weight'):
+            continue
+        elif key.endswith('w_gate.weight'):
+            base = key[:-len('w_gate.weight')]
+            out[base + 'w_gate_up.weight'] = torch.cat(
+                [sd[base + 'w_gate.weight'], sd[base + 'w_up.weight']], dim=0)
+        elif key.endswith('w_up.weight'):
+            continue
+        else:
+            out[key] = val
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -409,15 +544,59 @@ class Muon:
                     buf = st['buf']
                     buf.lerp_(g, 1.0 - momentum)
                     update = g.lerp(buf, momentum) if group['nesterov'] else buf
-                    u = zeropower_via_newtonschulz5(update, group['ns_steps'])
+                    # A fused Q/K/V (or gate/up) matrix is orthogonalized
+                    # block by block, so the maths is identical to having
+                    # kept the matrices separate.
+                    chunks = getattr(p, '_muon_chunks', 1)
+                    rows = p.size(-2) // chunks
                     # keep the update RMS shape-independent
-                    scale = max(1.0, p.size(-2) / p.size(-1)) ** 0.5
-                    p.add_(u, alpha=-lr * scale)
+                    scale = max(1.0, rows / p.size(-1)) ** 0.5
+                    for c in range(chunks):
+                        sl = slice(c * rows, (c + 1) * rows)
+                        u = zeropower_via_newtonschulz5(update[sl],
+                                                        group['ns_steps'])
+                        p.data[sl].add_(u, alpha=-lr * scale)
 
 
 # ----------------------------------------------------------------------
 # Training
 # ----------------------------------------------------------------------
+
+_WORKER_TOK = None
+
+
+def _worker_init(tok_path):
+    global _WORKER_TOK
+    _WORKER_TOK = ByteBPE.load(tok_path)
+
+
+def _worker_encode(chunk):
+    return [_WORKER_TOK.encode(doc) for doc in chunk]
+
+
+def encode_documents(docs, tok_path, workers=None):
+    """Tokenize every document, in parallel across the CPU cores.
+
+    Byte-level BPE in Python is a real part of the build time; running
+    one worker per core nearly halves it.
+    """
+    import multiprocessing as mp
+    workers = workers or max(1, (os.cpu_count() or 2))
+    size = 256
+    chunks = [docs[i:i + size] for i in range(0, len(docs), size)]
+    if workers == 1:
+        _worker_init(tok_path)
+        return [seq for chunk in chunks for seq in _worker_encode(chunk)]
+    out = []
+    ctxm = mp.get_context('fork')
+    with ctxm.Pool(workers, initializer=_worker_init,
+                   initargs=(tok_path,)) as pool:
+        for res in pool.imap(_worker_encode, chunks, chunksize=4):
+            out.extend(res)
+            if len(out) % 20000 < size:
+                print(f'  {len(out):,}/{len(docs):,} docs', flush=True)
+    return out
+
 
 def eval_val(model, val_tokens, ctx, batches=8):
     """Mean loss over fixed, non-overlapping windows of the held-out
@@ -463,6 +642,20 @@ def main():
     parser.add_argument('--vocab_size', type=int, default=4096)
     parser.add_argument('--model_dir', type=str, default=MODEL_DIR)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--fused', action='store_true',
+                        help='pack Q/K/V and gate/up into single matrices '
+                             '(identical parameters and maths; helps on '
+                             'GPUs, no gain on a 2-core CPU)')
+    parser.add_argument('--no_sdpa', action='store_true',
+                        help="use the hand-written attention instead of "
+                             "torch's fused attention (measured ~1.5x "
+                             "slower on CPU)")
+    parser.add_argument('--compile', action='store_true',
+                        help='torch.compile the model (needs a C++ '
+                             'toolchain; falls back to eager mode)')
+    parser.add_argument('--max_minutes', type=float, default=0,
+                        help='stop early and save once this much wall '
+                             'clock has passed (0 = no limit)')
     parser.add_argument('--resume', action='store_true',
                         help='continue training the existing checkpoint '
                              '(loads weights, runs --steps more steps)')
@@ -479,7 +672,6 @@ def main():
     # 1. Corpus ------------------------------------------------------
     fetch_corpus()
     docs = build_documents()
-    print(f'corpus: {len(docs):,} documents')
 
     # 2. Tokenizer ---------------------------------------------------
     tok_path = os.path.join(args.model_dir, 'bpe_tokenizer.json')
@@ -497,20 +689,22 @@ def main():
     bin_path = os.path.join(args.model_dir, 'tokens.bin')
     val_path = os.path.join(args.model_dir, 'tokens_val.bin')
     if not (os.path.exists(bin_path) and os.path.exists(val_path)):
-        print('tokenizing the corpus...')
+        workers = max(1, (os.cpu_count() or 2))
+        print(f'tokenizing the corpus ({workers} workers)...')
+        t_tok = time.time()
         rng = random.Random(7)
         val_docs = set(rng.sample(range(len(docs)),
                                   max(1, int(0.005 * len(docs)))))
+        eos = tok.encode('<|im_end|>')[0]
         ids, val_ids = [], []
-        for i, doc in enumerate(docs):
+        for i, seq in enumerate(encode_documents(docs, tok_path, workers)):
             out = val_ids if i in val_docs else ids
-            out.extend(tok.encode(doc))
-            out.append(tok.encode('<|im_end|>')[0])
-            if (i + 1) % 20000 == 0:
-                print(f'  {i + 1}/{len(docs)} docs', flush=True)
+            out.extend(seq)
+            out.append(eos)
         np.array(ids, dtype=np.uint16).tofile(bin_path)
         np.array(val_ids, dtype=np.uint16).tofile(val_path)
-        print(f'tokens: {len(ids):,} train, {len(val_ids):,} val')
+        print(f'tokens: {len(ids):,} train, {len(val_ids):,} val '
+              f'in {time.time() - t_tok:.0f}s')
     tokens = np.memmap(bin_path, dtype=np.uint16, mode='r')
     val_tokens = np.memmap(val_path, dtype=np.uint16, mode='r')
 
@@ -520,7 +714,8 @@ def main():
         'n_heads': args.n_heads, 'n_ff': args.n_ff, 'ctx': args.ctx,
         'vocab_size': tok.vocab_size,
     }
-    model = build_model(config, tok.vocab_size)
+    model = build_model(config, tok.vocab_size, fused=args.fused,
+                        sdpa=not args.no_sdpa)
     n_params = sum(p.numel() for p in model.parameters())
     print(f'model: {n_params:,} parameters '
           f'(d={args.d_model} L={args.n_layers} h={args.n_heads} ff={args.n_ff} ctx={args.ctx})')
@@ -533,9 +728,20 @@ def main():
             raise SystemExit(
                 f'checkpoint config {ckpt["config"]} != current {config}; '
                 'resume needs identical model settings')
-        model.load_state_dict(ckpt['state_dict'])
+        state = ckpt['state_dict']
+        if getattr(model, 'fused', False):
+            state = fuse_state_dict(state)
+        model.load_state_dict(state)
         resumed_from = ckpt.get('step', 0)
         print(f'resumed weights from step {resumed_from}')
+
+    raw_model = model      # torch.compile wraps the module; save from this
+    if args.compile:
+        try:
+            model = torch.compile(model)
+            print('torch.compile: enabled')
+        except Exception as exc:
+            print(f'torch.compile unavailable ({exc}) - running eager')
 
     # 5. Optimizers --------------------------------------------------
     # hidden 2-D matrices -> Muon; embeddings + norms -> AdamW
@@ -561,14 +767,24 @@ def main():
 
     warmup = max(10, args.steps // 50)
 
-    def lr_mult(step):
+    def lr_mult(step, elapsed=0.0):
+        """Warmup then cosine decay.
+
+        With --max_minutes the schedule follows whichever is further
+        along, steps or wall clock, so a run that stops on the time
+        budget still ends with a fully annealed learning rate instead of
+        being cut off mid-schedule. That makes 'train for 2 hours' a
+        first-class option on any machine.
+        """
         if step < warmup:
             return (step + 1) / warmup
         t = (step - warmup) / max(1, args.steps - warmup)
-        return 0.1 + 0.45 * (1 + math.cos(math.pi * t))
+        if args.max_minutes:
+            t = max(t, elapsed / (args.max_minutes * 60))
+        return 0.1 + 0.45 * (1 + math.cos(math.pi * min(1.0, t)))
 
-    def set_lrs(step):
-        m = lr_mult(step)
+    def set_lrs(step, elapsed=0.0):
+        m = lr_mult(step, elapsed)
         for opt in optimizers:
             base = (args.muon_lr if (isinstance(opt, Muon))
                     else (args.lr if len(optimizers) == 1 else args.lr))
@@ -581,8 +797,9 @@ def main():
     model.train()
     started = time.time()
     tokens_seen = 0
+    steps_done = args.steps
     for step in range(args.steps):
-        set_lrs(step)
+        set_lrs(step, time.time() - started)
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
         # accumulate micro-batches of random windows from the token stream
@@ -617,25 +834,34 @@ def main():
                   flush=True)
 
         if (step + 1) % 200 == 0 or step == args.steps - 1:
-            save_checkpoint(model, config, args.model_dir,
+            save_checkpoint(raw_model, config, args.model_dir,
                             resumed_from + step, tok_path)
             print(f'checkpoint saved (step {resumed_from + step + 1})')
 
-    save_checkpoint(model, config, args.model_dir,
-                    resumed_from + args.steps - 1, tok_path)
+        if (args.max_minutes
+                and (time.time() - started) / 60 >= args.max_minutes):
+            print(f'time budget of {args.max_minutes:g} min reached at '
+                  f'step {step + 1}', flush=True)
+            steps_done = step + 1
+            break
+
+    save_checkpoint(raw_model, config, args.model_dir,
+                    resumed_from + steps_done - 1, tok_path)
     total = time.time() - started
-    print(f'done: {args.steps} more steps ({resumed_from + args.steps} total), '
-          f'{tokens_seen:,} tokens in {total / 60:.1f} min')
+    print(f'done: {steps_done} more steps ({resumed_from + steps_done} '
+          f'total), {tokens_seen:,} tokens in {total / 60:.1f} min '
+          f'({tokens_seen / total:,.0f} tok/s)')
     print(f'next: python export_gguf.py --model_dir {args.model_dir}')
 
 
 def save_checkpoint(model, config, model_dir, step, tok_path):
     import torch
+    sd = split_state_dict(model.state_dict(), config)
     ckpt = {
         'config': config,
         'step': step + 1,
         'tokenizer': os.path.basename(tok_path),
-        'state_dict': {k: v.cpu() for k, v in model.state_dict().items()},
+        'state_dict': {k: v.cpu() for k, v in sd.items()},
     }
     path = os.path.join(model_dir, 'checkpoint.pt')
     tmp = path + '.tmp'
