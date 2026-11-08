@@ -36,10 +36,12 @@ jobs:
         run: python tests/test_gguf_pipeline.py
 
       - name: Train the GGUF chat model from scratch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python train_big.py --steps 1600 --d_model 256 --n_layers 6 \
             --n_heads 8 --n_ff 672 --ctx 512 --batch 12 --vocab_size 4096 \
-            --model_dir checkpoints-big
+            --optimizer muon --muon_lr 0.04 --model_dir checkpoints-big
 
       - name: Export to GGUF
         run: python export_gguf.py

@@ -32,4 +32,6 @@ data/extensions.json
 # From-scratch GGUF model training (train_big.py) - large local artifacts
 data/bigcorpus/
 checkpoints-big/
+checkpoints-pilot-data/
+pilot-*/
 lito-chat.gguf

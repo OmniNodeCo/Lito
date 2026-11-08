@@ -282,6 +282,44 @@ def _skip_if_no_torch():
 
 
 @test
+def muon_orthogonalizes_updates():
+    """Newton-Schulz must return (approximately) orthogonal matrices, and
+    Muon must descend: the fast-training optimizer used by train_big.py."""
+    import torch
+    from train_big import zeropower_via_newtonschulz5, Muon
+    torch.manual_seed(4)
+    for shape in ((32, 32), (64, 48), (48, 64), (256, 672)):
+        G = torch.randn(*shape)
+        U = zeropower_via_newtonschulz5(G, steps=5)
+        eye = torch.eye(min(shape))
+        gram = U @ U.T if U.shape[0] <= U.shape[1] else U.T @ U
+        # the quintic iteration approximately equalizes the spectrum in
+        # 5 steps (exact in the limit): check the result is close to
+        # orthogonal and far closer than the raw gradient was
+        raw = G @ G.T if G.shape[0] <= G.shape[1] else G.T @ G
+        raw_off = (raw - torch.eye(raw.shape[0])).abs().max().item()
+        off = (gram - eye).abs().max().item()
+        assert off < 0.5, f'{shape}: |UU^T - I| = {off:.3f}'
+        assert off < raw_off * 0.1, \
+            f'{shape}: not meaningfully orthogonalized ({off} vs {raw_off})'
+
+    # a small quadratic problem: minimize ||W x - y||^2 with Muon
+    W0 = torch.randn(24, 16)
+    x = torch.randn(16, 64)
+    y = torch.randn(24, 64)
+    W = W0.clone().requires_grad_(True)
+    opt = Muon([W], lr=0.05)
+    losses = []
+    for _ in range(60):
+        loss = ((W @ x - y) ** 2).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        losses.append(loss.item())
+    assert losses[-1] < losses[0] * 0.5, (losses[0], losses[-1])
+
+
+@test
 def trainer_learns_and_checkpoints():
     if _skip_if_no_torch():
         return

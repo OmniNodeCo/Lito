@@ -35,8 +35,9 @@ English dictionary, and live web search.
 - **Chat and answer questions** using a transformer language model trained from
   scratch, a built-in knowledge base and BM25 knowledge retrieval
 - **A real GGUF chat model, run in-house** (v1.2.6) — a from-scratch
-  llama-architecture transformer (~6.8M parameters) trained on ~52k
-  instruction pairs and shipped as `lito-chat.gguf`. Lito chats with it
+  llama-architecture transformer (~5.7M parameters) trained on a quality
+  corpus (~52k GPT-4-answered instruction pairs + TinyStories, ~17.7M
+  tokens, with the Muon optimizer for fast training) and shipped as `lito-chat.gguf`. Lito chats with it
   using its **own numpy inference engine** (`src/llama_np.py` — GGUF
   reader, KV-cache attention, RoPE, SwiGLU, sampling, ChatML chat, all
   from scratch), no ML frameworks involved; the very same file also runs
@@ -273,14 +274,16 @@ time is it?").
 ### The chat model: GGUF, run by its own engine (v1.2.6)
 
 The chat model is a llama-architecture transformer — RMSNorm, interleaved
-RoPE, grouped-query-shaped attention weights, SwiGLU FFN, tied
-input/output embeddings (~6.8M parameters by default) — trained **from
-random initialization** on ~52,000 instruction/response pairs (Stanford
-Alpaca, formatted as ChatML) plus public-domain prose, then exported to
-**GGUF**. No pretrained weights anywhere: the tokenizer (`src/bpe.py`, a
-GPT-2-style byte-level BPE), the trainer (`train_big.py`), the GGUF
-writer (`src/gguf.py`) and the **numpy inference engine**
-(`src/llama_np.py`) are all implemented in this repo, from scratch.
+RoPE, SwiGLU FFN, tied input/output embeddings (~5.7M parameters by
+default) — trained **from random initialization** on a quality corpus
+(~17.7M tokens): the 52,000 Stanford Alpaca prompts **re-answered by
+GPT-4** (formatted as ChatML), **TinyStories** (GPT-4-written simple
+English stories — the data that famously lets tiny models speak
+coherently) and public-domain prose, then exported to **GGUF**. No
+pretrained weights anywhere: the tokenizer (`src/bpe.py`, a GPT-2-style
+byte-level BPE), the trainer (`train_big.py`), the GGUF writer
+(`src/gguf.py`) and the **numpy inference engine** (`src/llama_np.py`)
+are all implemented in this repo, from scratch.
 
 The engine is what the app itself uses to chat: it reads the GGUF file,
 rebuilds the network in numpy and generates with a KV cache (prefill +
@@ -300,10 +303,10 @@ vocabulary and merges, a ChatML chat template and the `<|im_start|>` /
 `<|im_end|>` control tokens — a front-end that understands GGUF chat
 templates needs zero configuration.
 
-Honest expectations: at ~7M parameters (vs billions for ChatGPT-class
-models) trained on a few million tokens, it chats in simple,
-mostly-coherent English, follows the ChatML format, answers common
-instruction-style prompts and knows its corpus — it is a real language
+Honest expectations: at ~6M parameters (vs billions for ChatGPT-class
+models), it chats in simple, coherent English (TinyStories works), follows
+the ChatML format, answers common instruction-style prompts and knows its
+corpus — it is a real language
 model, not a retrieval trick, but it is small. The whole pipeline
 scales: rerun `train_big.py` with a bigger `--d_model`, more `--steps`
 and a larger corpus on a GPU box and export again — nothing else
@@ -312,14 +315,31 @@ changes.
 ### Training the model (`train_big.py` + `export_gguf.py`)
 
 ```bash
-# 1. train (downloads the corpus itself; ~90 min for 1200 steps on 2 CPU cores)
+# 1. train (downloads the corpus itself; ~1600 steps in well under two
+#    hours on 2 CPU cores)
 pip install torch                     # plus numpy, already required
 python train_big.py                   # -> checkpoints-big/checkpoint.pt
-python train_big.py --resume --lr 1.5e-3   # optional: keep training
+python train_big.py --resume          # optional: keep training
 # 2. export to GGUF
 python export_gguf.py                 # -> lito-chat.gguf
 # 3. the app picks it up from the repo root automatically (or drop the
 #    file into models/<name>/ and switch to it from the sidebar)
+```
+
+**Fast training — Muon.** The hidden matrices (attention projections,
+SwiGLU weights) are optimized with **Muon**: momentum whose update
+direction is orthogonalized by a quintic Newton-Schulz iteration (no
+SVD), so every singular direction of each weight moves with equal
+strength. Embeddings and norms stay on AdamW. At this scale Muon learns
+markedly more per token than AdamW alone — same architecture, same
+data, better model for the compute. `--optimizer adamw` switches back
+for comparisons. A small held-out split reports validation loss every
+100 steps so quality is visible while training.
+
+Scale up on a bigger box and it just improves:
+
+```bash
+python train_big.py --d_model 384 --n_layers 8 --n_ff 1344 --steps 4000
 ```
 
 CI runs exactly this for every release: `build.yml` trains a fresh
@@ -327,10 +347,12 @@ model, verifies it loads and chats through the numpy engine, bundles it
 into the frozen engine and attaches `lito-chat.gguf` to the release (see
 [Releases](#releases)).
 
-**Corpus licensing:** the instruction data is Stanford Alpaca
-(`tatsu-lab/stanford_alpaca`), which is intended for research purposes
-(see its `DATA_LICENSE`); the prose (tiny shakespeare) is public domain.
-`data/bigcorpus/SOURCES.md` records this where the corpus is fetched.
+**Corpus licensing:** the instruction data is the Stanford Alpaca prompts
+re-answered by GPT-4 (`Instruction-Tuning-with-GPT-4/GPT-4-LLM`,
+intended for research purposes); TinyStories is GPT-4-generated
+(roneneldan/TinyStories, CDLA-Sharing-1.0); the prose (tiny shakespeare)
+is public domain. `data/bigcorpus/SOURCES.md` records all of this where
+the corpus is fetched.
 
 ### Complex sentence understanding (`src/nlp.py`)
 
@@ -405,7 +427,7 @@ says so honestly instead of inventing an answer.
 
 ```bash
 python tests/test_features.py       # 63 tests, no network required
-python tests/test_gguf_pipeline.py  # 16 tests: BPE, GGUF, engine, exporter
+python tests/test_gguf_pipeline.py  # 17 tests: BPE, GGUF, engine, exporter
 ```
 
 The first suite covers the dictionary, NLP pipeline, search parsing,

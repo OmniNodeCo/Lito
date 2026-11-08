@@ -69,3 +69,6 @@ training:
   ctx: 512
   batch: 12
   vocab_size: 4096
+  optimizer: muon
+  muon_lr: 0.04
+  corpus_tokens: 17600000
