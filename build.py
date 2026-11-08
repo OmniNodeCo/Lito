@@ -12,6 +12,10 @@ import sys
 import os
 
 
+# Never bundled into the app: training-only data
+EXCLUDED_DATA = {'bigcorpus'}
+
+
 def _parse_value(value: str):
     """Parse a scalar YAML-ish value: bool, list, quoted or plain string."""
     value = value.strip()
@@ -139,11 +143,24 @@ def _build_target(config: dict, target: dict):
         cmd.extend(['--icon', str(icon)])
 
     # Add data directories listed in extra_data (src, data, extensions,
-    # ...) - each is bundled with the executable
+    # ...) - each is bundled with the executable. Training-only
+    # directories (the multi-megabyte corpus) are skipped: the app needs
+    # the model, not the data it was trained on.
     for data_dir in extra_data:
         data_dir = str(data_dir)
-        if os.path.exists(data_dir) and os.path.isdir(data_dir):
+        if not (os.path.exists(data_dir) and os.path.isdir(data_dir)):
+            continue
+        skip = [name for name in EXCLUDED_DATA
+                if os.path.isdir(os.path.join(data_dir, name))]
+        if not skip:
             cmd.extend(['--add-data', f'{data_dir}{os.pathsep}{data_dir}'])
+            continue
+        for name in sorted(os.listdir(data_dir)):
+            if name in EXCLUDED_DATA:
+                print(f'  skipping {data_dir}/{name} (training data)')
+                continue
+            child = os.path.join(data_dir, name)
+            cmd.extend(['--add-data', f'{child}{os.pathsep}{data_dir}'])
 
     # Single files (e.g. lito-chat.gguf) land next to the executable
     # inside the bundle; a missing model is only a warning (the engine
