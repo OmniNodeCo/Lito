@@ -36,8 +36,9 @@ English dictionary, and live web search.
   scratch, a built-in knowledge base and BM25 knowledge retrieval
 - **A real GGUF chat model, run in-house** (v1.2.6) — a from-scratch
   llama-architecture transformer (~5.7M parameters) trained on a quality
-  corpus (~52k GPT-4-answered instruction pairs + TinyStories, ~17.7M
-  tokens, with the Muon optimizer for fast training) and shipped as `lito-chat.gguf`. Lito chats with it
+  corpus (a built-in conversation core + TinyStories + GPT-4-answered
+  instruction pairs, 7.87M tokens, with the Muon optimizer and fused
+  attention for fast training) and shipped as `lito-chat.gguf`. Lito chats with it
   using its **own numpy inference engine** (`src/llama_np.py` — GGUF
   reader, KV-cache attention, RoPE, SwiGLU, sampling, ChatML chat, all
   from scratch), no ML frameworks involved; the very same file also runs
@@ -274,12 +275,18 @@ time is it?").
 ### The chat model: GGUF, run by its own engine (v1.2.6)
 
 The chat model is a llama-architecture transformer — RMSNorm, interleaved
-RoPE, SwiGLU FFN, tied input/output embeddings (~5.7M parameters by
-default) — trained **from random initialization** on a quality corpus
-(~17.7M tokens): the 52,000 Stanford Alpaca prompts **re-answered by
-GPT-4** (formatted as ChatML), **TinyStories** (GPT-4-written simple
-English stories — the data that famously lets tiny models speak
-coherently) and public-domain prose, then exported to **GGUF**. No
+RoPE, SwiGLU FFN, tied input/output embeddings (**5,721,344 parameters**
+by default) — trained **from random initialization** and exported to
+**GGUF**. The corpus (57,034 documents / **7.87M tokens**) is chosen for
+what a few-million-parameter model can actually learn:
+
+| part | what it is | why |
+|---|---|---|
+| **conversation core** (`chatdata.py`) | ~8.5k generated dialogues: greetings, "who are you", what it can do, thanks, goodbyes, honest "I can't check the weather", small arithmetic, capitals, everyday facts, word meanings | the first thing anyone types is "hello" — so it is the most common thing in training, not a gap |
+| **TinyStories** | GPT-4-written simple-English stories | the data that famously lets tiny models speak coherent English |
+| **instruction pairs** | the 52,000 Stanford Alpaca prompts re-answered by **GPT-4**, filtered to prose answers under 420 characters (31,052 long/list/code answers dropped) | a small model that trains on long markdown lists learns the *shape* of a list and fills it with invented words |
+
+No
 pretrained weights anywhere: the tokenizer (`src/bpe.py`, a GPT-2-style
 byte-level BPE), the trainer (`train_big.py`), the GGUF writer
 (`src/gguf.py`) and the **numpy inference engine** (`src/llama_np.py`)
@@ -303,20 +310,29 @@ vocabulary and merges, a ChatML chat template and the `<|im_start|>` /
 `<|im_end|>` control tokens — a front-end that understands GGUF chat
 templates needs zero configuration.
 
-Honest expectations: at ~6M parameters (vs billions for ChatGPT-class
-models), it chats in simple, coherent English (TinyStories works), follows
-the ChatML format, answers common instruction-style prompts and knows its
-corpus — it is a real language
-model, not a retrieval trick, but it is small. The whole pipeline
-scales: rerun `train_big.py` with a bigger `--d_model`, more `--steps`
-and a larger corpus on a GPU box and export again — nothing else
-changes.
+Honest expectations: at ~5.7M parameters (vs billions for ChatGPT-class
+models), it greets you, says who it is, answers small sums and common
+facts, tells a simple story and follows the ChatML format — a real
+language model, not a retrieval trick, but a small one. Ask it something
+hard and it will be wrong. The whole pipeline scales: rerun
+`train_big.py` with a bigger `--d_model`, more `--steps` and a larger
+corpus on a GPU box and export again — nothing else changes.
+
+Two guards keep that honesty: `src/quality.py` judges whether generated
+text is real English at all (how many words exist in the shipped 160k
+word list, fragment/list soup, repetition) and the app silently drops
+neural text that fails; `tools/chat_eval.py` runs the same judge over
+real prompts as a release gate.
+
+```bash
+python tools/chat_eval.py -v          # grade hello / who are you / 2+3 / ...
+```
 
 ### Training the model (`train_big.py` + `export_gguf.py`)
 
 ```bash
-# 1. train (downloads the corpus itself; ~1600 steps in well under two
-#    hours on 2 CPU cores)
+# 1. train (downloads the corpus itself; the defaults take well under
+#    two hours on 2 CPU cores - or set a budget with --max_minutes 60)
 pip install torch                     # plus numpy, already required
 python train_big.py                   # -> checkpoints-big/checkpoint.pt
 python train_big.py --resume          # optional: keep training
@@ -326,15 +342,23 @@ python export_gguf.py                 # -> lito-chat.gguf
 #    file into models/<name>/ and switch to it from the sidebar)
 ```
 
-**Fast training — Muon.** The hidden matrices (attention projections,
-SwiGLU weights) are optimized with **Muon**: momentum whose update
-direction is orthogonalized by a quintic Newton-Schulz iteration (no
-SVD), so every singular direction of each weight moves with equal
-strength. Embeddings and norms stay on AdamW. At this scale Muon learns
-markedly more per token than AdamW alone — same architecture, same
-data, better model for the compute. `--optimizer adamw` switches back
-for comparisons. A small held-out split reports validation loss every
-100 steps so quality is visible while training.
+**Fast training.** Every speed-up below keeps the architecture and the
+parameter count identical — same 5,721,344 weights, trained better and
+sooner. Measured on the 2-core box that wrote this (`tools/bench_speed.py`
+reproduces the throughput rows):
+
+| change | effect |
+|---|---|
+| **Muon** on the hidden matrices | momentum whose update direction is orthogonalized by a quintic Newton-Schulz iteration (no SVD), so every singular direction moves with equal strength. Embeddings and norms stay on AdamW. val loss 5.60 → 4.59 at 250 steps vs AdamW |
+| **fused attention** (`F.scaled_dot_product_attention`) | 1,554 → **2,300 tok/s** sustained (+48%); a test proves it computes the same function as the hand-written attention |
+| **init fix** | torch's default `nn.Embedding` init is N(0, 1), which with a tied head starts training at loss **242** instead of ln(4096) = 8.3. N(0, 0.02) plus GPT-2 residual scaling: val loss at step 100 **4.7974 → 3.7726** on an otherwise identical run |
+| **parallel tokenization** | the BPE pass runs one worker per core: 7.87M tokens in **85s** |
+| **`--max_minutes`** | the cosine schedule follows whichever is further along, steps or wall clock, so "train for 90 minutes" ends fully annealed on any machine |
+| **`--fused`** (optional) | packs Q/K/V and gate/up into single GEMMs — identical parameters and maths (tested both ways), a win on GPUs, measured neutral on 2 CPU cores |
+
+`--optimizer adamw`, `--no_sdpa` and `--compile` switch the pieces for
+comparison. A held-out split reports validation loss every 100 steps so
+quality is visible while training.
 
 Scale up on a bigger box and it just improves:
 
@@ -470,9 +494,10 @@ makes the app fully self-installing.
 server.py             local API server + web UI backend (Ollama-style)
 desktop/              Go desktop app: main.go, go.mod, ui/ (web UI)
 train_big.py          from-scratch llama-arch trainer -> checkpoint
+chatdata.py           the conversation core the model is taught cold
 export_gguf.py        checkpoint -> lito-chat.gguf (llama.cpp & friends)
-src/                  all source: NLP, dictionary, search, brain, extension
-                      loader, model manager / version database, bpe.py +
+src/                  all source: NLP, dictionary, search, brain, quality
+                      judge, extension loader, model manager, bpe.py +
                       gguf.py (GGUF read/write) and llama_np.py (the numpy
                       inference engine that runs lito-chat.gguf)
 extensions/           optional skill plugins (calculator, dice, datetime)
@@ -480,7 +505,8 @@ models/               models downloaded from the version database (created)
 data/                 offline dictionary data (see data/README.md); the
                       GGUF training corpus is fetched into data/bigcorpus/
 checkpoints-big/      training output (created by train_big.py)
-tools/                dictionary build scripts
+tools/                dictionary build scripts, chat_eval.py (release
+                      quality gate), bench_speed.py (throughput numbers)
 tests/                feature tests (test_features.py, test_gguf_pipeline.py)
 build.py, build.yml   PyInstaller packaging config
 .github/workflows/    CI: build.yml (train + package + Go desktop), release.yml (publish)

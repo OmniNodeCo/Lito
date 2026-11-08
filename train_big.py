@@ -144,8 +144,8 @@ def fetch_corpus():
                 '  (tatsu-lab/stanford_alpaca), used as a fallback when the\n'
                 '  GPT-4-answered set is unreachable. Research purposes; see\n'
                 '  the repo\'s DATA_LICENSE.\n'
-                '- `shakespeare.txt` - tiny shakespeare (karpathy/char-rnn),\n'
-                '  public domain.\n')
+                '\nThe conversation core mixed in at training time is\n'
+                'written in this repo (chatdata.py) - no external data.\n')
 
 
 STORY_PROMPTS = [
