@@ -238,7 +238,7 @@ class LlamaEngine:
     # ------------------------------------------------------------------
     # Generation
     # ------------------------------------------------------------------
-    def generate(self, ids, max_new_tokens=96, temperature=0.8, top_p=0.9,
+    def generate(self, ids, max_new_tokens=96, temperature=0.3, top_p=0.9,
                  repeat_penalty=1.1, stop_ids=None, seed=None):
         """Continue `ids`, generating up to max_new_tokens tokens.
         Returns only the newly generated ids. Uses/extends the KV cache -
@@ -271,7 +271,7 @@ class LlamaEngine:
     # ------------------------------------------------------------------
     # Chat (ChatML, the format the models are trained on)
     # ------------------------------------------------------------------
-    def chat(self, messages, max_new_tokens=160, temperature=0.8,
+    def chat(self, messages, max_new_tokens=160, temperature=0.3,
              top_p=0.9, repeat_penalty=1.1, seed=None):
         """messages: list of {'role': ..., 'content': ...} dicts.
         Generates the assistant reply for the conversation so far and

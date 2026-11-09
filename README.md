@@ -328,6 +328,25 @@ real prompts as a release gate.
 python tools/chat_eval.py -v          # grade hello / who are you / 2+3 / ...
 ```
 
+A 58-minute run on two CPU cores (950 steps, 5.8M tokens) scores
+**71%** on that gate and answers like this:
+
+```
+hello              -> Hello! How can I help you today?
+who are you        -> I'm Lito, a small language model that was trained from
+                      scratch. I can chat with you, answer simple questions
+                      and tell stories.
+what is your name  -> My name is Lito. What's yours?
+tell me a story    -> Once upon a time, there was a little girl named Lily.
+                      She loved to play with her toys in the park...
+```
+
+It still gets facts wrong ("the capital of India is Mexico") - 5.7M
+parameters is 5.7M parameters, and CI trains it for longer than an hour.
+Decoding temperature matters more than you would expect at this size;
+averaged over four seeds of the gate: **0.2-0.5 → 74-75%**, 0.7 → 71%,
+0.9 → 64%, so the app generates at **0.3**.
+
 ### Training the model (`train_big.py` + `export_gguf.py`)
 
 ```bash
@@ -355,6 +374,10 @@ reproduces the throughput rows):
 | **parallel tokenization** | the BPE pass runs one worker per core: 7.87M tokens in **85s** |
 | **`--max_minutes`** | the cosine schedule follows whichever is further along, steps or wall clock, so "train for 90 minutes" ends fully annealed on any machine |
 | **data annealing** | the last 30% of training mixes the conversation core in (up to half the batches), so the last thing the model learns is the first thing a user types. `--core_anneal` / `--core_mix` |
+
+Together, on the same 2-core box: validation loss **3.77 → 2.41** over a
+58-minute run, where the previous code needed the same hour to reach
+4.80 at step 100 and answered "hello" with invented words.
 | **`--fused`** (optional) | packs Q/K/V and gate/up into single GEMMs — identical parameters and maths (tested both ways), a win on GPUs, measured neutral on 2 CPU cores |
 
 `--optimizer adamw`, `--no_sdpa` and `--compile` switch the pieces for

@@ -1131,9 +1131,13 @@ class AIBrain:
             for msg in self.conversation_history[-3:-1]:
                 messages.append({'role': msg['role'], 'content': msg['content']})
             messages.append({'role': 'user', 'content': prompt})
+            # Low temperature on purpose. Measured on the shipped model
+            # with tools/chat_eval.py (4 seeds): 0.2-0.5 scores 74-75%,
+            # 0.7 scores 71%, 0.9 scores 64%. A small model has little
+            # probability mass to spare for creative sampling.
             generated_text = self.model.chat(
                 messages, max_new_tokens=max_tokens,
-                temperature=0.7, top_p=0.9, repeat_penalty=1.15)
+                temperature=0.3, top_p=0.9, repeat_penalty=1.1)
             return generated_text.strip()
         except Exception:
             return ""

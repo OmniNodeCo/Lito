@@ -40,10 +40,12 @@ PROBES = [
     ('how are you', [r"\b(i'm|i am|good|well|fine|great|doing)\b"], 1),
     ('thanks', [r"\b(welcome|happy to help|any time|pleasure|glad)\b"], 1),
     ('bye', [r'\b(bye|goodbye|see you|take care|good night)\b'], 1),
-    ('what is 2 plus 3?', [r'\b5\b|\bfive\b'], 1),
-    ('what is 7 plus 5?', [r'\b12\b|\btwelve\b'], 1),
-    ('What is the capital of France?', [r'\bparis\b'], 1),
-    ('How many days are in a week?', [r'\bseven\b|\b7\b'], 1),
+    # the answer must be the result, not merely a digit that appears
+    ('what is 2 plus 3?', [r'\bis (5|five)\b'], 1),
+    ('what is 7 plus 5?', [r'\bis (12|twelve)\b'], 1),
+    ('What is the capital of France?', [r'capital of france is paris',
+                                        r'^paris'], 1),
+    ('How many days are in a week?', [r'\b(seven|7) days\b'], 1),
     ('tell me a story', [r'\b(once|there (was|were)|one day|a little)\b'], 2),
 ]
 
