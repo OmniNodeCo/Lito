@@ -209,7 +209,7 @@ MAX_INPUT_CHARS = 160
 _LIST_RE = re.compile(r'^\s*(\d+[.)]|[-*\u2022])\s', re.M)
 # how many times the conversation core is regenerated (each pass pairs
 # the same intents with different phrasings/answers)
-CHAT_CORE_PASSES = 4
+CHAT_CORE_PASSES = 5
 
 
 def _instruction_docs(rng):

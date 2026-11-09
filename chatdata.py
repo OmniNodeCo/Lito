@@ -57,6 +57,12 @@ INTENTS = [
      ['Good evening! How can I help you tonight?',
       'Good evening! What would you like to do?']),
 
+    (['good night', 'goodnight', 'good night!', 'night night',
+      "i'm going to bed", 'time for bed'],
+     ['Good night! Sleep well.',
+      'Good night! I hope you sleep well.',
+      'Sleep well! See you tomorrow.']),
+
     # -- how are you --------------------------------------------------
     (['how are you', 'how are you?', 'How are you doing?',
       'how are you today', 'how do you feel', "how's it going",
@@ -153,7 +159,9 @@ INTENTS = [
     # -- capabilities -------------------------------------------------
     (['what can you do', 'what can you do?', 'how can you help me',
       'what do you do', 'what are you good at', 'can you help me',
-      'help', 'help me', 'what should i ask you'],
+      'help', 'help me', 'what should i ask you', 'what can i ask you',
+      'what are your skills', 'tell me what you can do',
+      'what things can you do', 'how do you help'],
      ['I can chat with you, answer simple questions, do small arithmetic, '
       'explain words and tell short stories. What would you like?',
       'I am good at friendly conversation, simple facts, small sums and '
@@ -199,12 +207,12 @@ INTENTS = [
       'Sorry about that. Could you tell me the right answer, or ask me in a '
       'different way?']),
 
-    (['bye', 'goodbye', 'bye!', 'see you', 'see you later', 'good night',
-      'goodnight', 'talk later', 'i have to go', 'cya', 'later', 'gtg'],
+    (['bye', 'goodbye', 'bye!', 'see you', 'see you later', 'bye bye',
+      'talk later', 'i have to go', 'cya', 'later', 'gtg', 'farewell'],
      ['Goodbye! It was nice talking with you.',
       'See you later! Come back any time.',
       'Bye for now - take care!',
-      'Good night! Sleep well.',
+      'Goodbye! Thanks for chatting.',
       'Talk soon! Have a good day.']),
 
     (['nice to meet you', 'pleased to meet you', "it's nice to meet you"],
