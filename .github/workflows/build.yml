@@ -88,7 +88,7 @@ jobs:
       # The gate that stops a release where "hello" comes back as word
       # salad: real prompts, graded answers.
       - name: Chat quality gate (greetings, identity, facts, stories)
-        run: python tools/chat_eval.py --temperature 0.0 --min-score 0.6 -v
+        run: python tools/chat_eval.py --temperature 0.0 --min-score 0.7 -v
 
       - name: Test chat inference through the brain
         run: |

@@ -971,6 +971,22 @@ def story_requests_are_routed_to_the_model():
 
 
 @test
+def calculator_understands_sums_written_in_words():
+    """The 5.7M model gets "7 plus 5" wrong; the calculator must not."""
+    import extensions.calculator as calc
+    cases = {'what is 2 plus 3': '5', 'what is 7 plus 5?': '12',
+             '9 times 8': '72', '20 divided by 4': '5', 'half of 20': '10',
+             'double 7': '14', '6 squared': '36', '10 minus 3': '7',
+             'what is 2 + 2 * 10': '22', '15% of 200': '30'}
+    for text, expected in cases.items():
+        assert calc.can_handle(text), text
+        assert f'= {expected}' in calc.handle(text, None), (text, expected)
+    for text in ('tell me a story', 'what is the capital of France',
+                 'hello', 'who are you'):
+        assert not calc.can_handle(text), text
+
+
+@test
 def word_salad_never_reaches_the_user():
     """The quality judge the app shares with the release gate."""
     from src.quality import looks_like_english, known_word_ratio

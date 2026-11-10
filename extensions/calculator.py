@@ -2,7 +2,12 @@
 Calculator extension for Lito.
 
 Handles simple arithmetic: "what is 2 + 2 * 10", "calculate 15% of 200",
-"3^8", "/calc (2+3)*4".
+"3^8", "/calc (2+3)*4" - and the same sums written in words,
+"what is 7 plus 5", "9 times 8", "half of 20", "20 divided by 4".
+
+Words matter here: the chat model is only a few million parameters and
+gets sums wrong ("7 plus 5 is 14"), while this extension is exact and
+runs first.
 """
 
 import ast
@@ -31,6 +36,18 @@ _STRIP_LEAD = re.compile(
 _STRIP_TAIL = re.compile(
     r"\s*(?:\?+|!+|\.+|thanks.*|please.*|equal(?:s)?\s*\??\s*)$",
     re.IGNORECASE)
+# "7 plus 5" / "9 times 8" / "20 divided by 4" / "10 minus 3"
+_WORD_OPS = (
+    (re.compile(r'\b(?:plus|and then|added to)\b', re.I), '+'),
+    (re.compile(r'\b(?:minus|less|take away|subtract(?:ed)? from)\b',
+                re.I), '-'),
+    (re.compile(r'\b(?:times|multiplied by)\b', re.I), '*'),
+    (re.compile(r'\b(?:divided by|over)\b', re.I), '/'),
+    (re.compile(r'\b(?:to the power of|squared by)\b', re.I), '**'),
+)
+_HALF_OF = re.compile(r'\bhalf of\s+(\d+(?:\.\d+)?)', re.I)
+_DOUBLE = re.compile(r'\bdouble\s+(\d+(?:\.\d+)?)', re.I)
+_SQUARED = re.compile(r'(\d+(?:\.\d+)?)\s+squared\b', re.I)
 _ARITH_CHARS = re.compile(r'^[\d\s+\-*/().,%×÷^xX]+$')
 _HAS_OPERATOR = re.compile(r'[+\-*/%^×÷xX]')
 _HAS_DIGIT = re.compile(r'\d')
@@ -39,6 +56,12 @@ _HAS_DIGIT = re.compile(r'\d')
 def _extract_expr(text: str) -> str:
     expr = _STRIP_LEAD.sub('', (text or '').strip())
     expr = _STRIP_TAIL.sub('', expr).strip()
+    # sums written in words -> symbols
+    expr = _HALF_OF.sub(r'(\1/2)', expr)
+    expr = _DOUBLE.sub(r'(\1*2)', expr)
+    expr = _SQUARED.sub(r'(\1**2)', expr)
+    for pattern, symbol in _WORD_OPS:
+        expr = pattern.sub(symbol, expr)
     # "15% of 200" -> "(15/100)*200"
     expr = re.sub(r'(\d+(?:\.\d+)?)\s*%\s*of\s+',
                   r'(\1/100)*', expr, flags=re.IGNORECASE)
