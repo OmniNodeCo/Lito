@@ -34,4 +34,7 @@ data/bigcorpus/
 checkpoints-big/
 checkpoints-pilot-data/
 pilot-*/
-lito-chat.gguf
+
+# NOTE: lito-chat.gguf is deliberately NOT ignored. The trained model is
+# committed (13.7 MB, f16) so that cloning the repo gives you a working
+# assistant with no download step and no training run.
