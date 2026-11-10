@@ -158,7 +158,8 @@ class LitoServer:
         if cmd in ('/quit', '/exit'):
             return '(the desktop app keeps running - just close the window)'
         if cmd == '/help':
-            lines = ['Commands: /help /info /reset /extensions /generate']
+            lines = ['Commands: /help /info /model /reset /extensions '
+                     '/generate']
             for c, help_text, name in self.ext.command_help():
                 lines.append(f'  {c:12s} - {help_text}  [{name} extension]')
             return '\n'.join(lines)
@@ -175,6 +176,10 @@ class LitoServer:
             return 'Conversation reset.'
         if cmd == '/extensions':
             return self.extensions_text(args)
+        if cmd == '/model':
+            if brain and brain.loaded and getattr(brain, 'model', None):
+                return brain.model.build_summary()
+            return 'No GGUF model loaded.'
         if cmd == '/generate':
             # Raw model output, bypassing the knowledge base - this is
             # how you test the GGUF itself. The quality verdict is
@@ -317,6 +322,10 @@ def make_handler(server_state: LitoServer):
                     'model': os.path.basename(self.state.brain_dir or ''),
                     'loaded': bool(brain and brain.loaded),
                     'params': getattr(brain.model, '_param_count', 0) if brain and brain.loaded else 0,
+                    'build': (brain.model.build_summary()
+                              if brain and brain.loaded
+                              and hasattr(brain.model, 'build_summary')
+                              else ''),
                     'vocab_size': (brain.model.vocab_size if brain and brain.loaded
                                    and brain.model else ''),
                     'search': bool(brain.search.enabled) if brain else self.state.search_enabled,

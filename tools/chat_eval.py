@@ -101,7 +101,20 @@ def main():
         print(f'no model at {args.gguf}')
         return 1
     print(f'model: {args.gguf} '
-          f'({os.path.getsize(args.gguf) / 1e6:.1f} MB)\n')
+          f'({os.path.getsize(args.gguf) / 1e6:.1f} MB)')
+    try:
+        from src.gguf import read_gguf_metadata
+        meta = read_gguf_metadata(args.gguf)
+        info = {k[len('lito.train.'):]: v for k, v in meta.items()
+                if k.startswith('lito.train.')}
+        if info:
+            print('build: ' + ', '.join(f'{k} {v}' for k, v in
+                                        sorted(info.items())))
+        else:
+            print('build: no provenance in this file (pre-v1.2.6 export)')
+    except Exception:
+        pass
+    print()
     score, _ = run(args.gguf, args.temperature, args.top_p, args.seed,
                    args.max_tokens, args.verbose)
     if args.min_score and score < args.min_score:

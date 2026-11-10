@@ -799,6 +799,43 @@ def core_anneal_ramps_only_at_the_end():
     assert core_fraction(2.0, anneal=0.3, mix=0.5) == 0.5   # clamped
 
 
+@test
+def gguf_carries_its_provenance():
+    """Every exported model says which code trained it, for how long and
+    how well it validated - so "is this the fixed model?" is answerable
+    from the file itself."""
+    if _skip_if_no_torch():
+        return
+    from train_big import build_model, save_checkpoint, git_commit
+    from export_gguf import export
+    from src.llama_np import LlamaEngine
+    tok = get_tokenizer()
+    cfg = {'d_model': 32, 'n_layers': 2, 'n_heads': 4, 'n_ff': 64,
+           'ctx': 16, 'vocab_size': tok.vocab_size}
+    model = build_model(cfg, tok.vocab_size)
+    info = {'steps': 1234, 'tokens': 7_243_776, 'corpus_tokens': 8_107_431,
+            'val_loss': 2.2631, 'optimizer': 'muon', 'commit': 'abc1234',
+            'date': '2026-11-09'}
+    with tempfile.TemporaryDirectory() as tmp:
+        tok.save(os.path.join(tmp, 'bpe_tokenizer.json'))
+        save_checkpoint(model, cfg, tmp, 1233, 'bpe_tokenizer.json', info)
+        out = os.path.join(tmp, 'lito.gguf')
+        export(tmp, out, name='Lito-Test')
+        kv = read_gguf(out)['kv']
+        engine = LlamaEngine(out)
+
+    assert kv['lito.train.commit'] == 'abc1234'
+    assert kv['lito.train.steps'] == 1234
+    assert kv['lito.train.tokens'] == 7_243_776
+    assert abs(kv['lito.train.val_loss'] - 2.2631) < 1e-4
+    assert 'commit abc1234' in kv['general.description']
+    summary = engine.build_summary()
+    for fragment in ('abc1234', '1,234 steps', '2.2631', '2026-11-09'):
+        assert fragment in summary, (fragment, summary)
+    # git_commit never explodes, whatever the environment
+    assert isinstance(git_commit(), str)
+
+
 # ----------------------------------------------------------------------
 # Runner
 # ----------------------------------------------------------------------

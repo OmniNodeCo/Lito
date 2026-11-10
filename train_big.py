@@ -840,8 +840,23 @@ def main():
                 g['lr'] = base * m
 
     # 6. Train -------------------------------------------------------
+    commit = git_commit()
+    last_val = [float('nan')]
+
+    def train_info(done):
+        val = last_val[0]
+        return {
+            'steps': resumed_from + done,
+            'tokens': int(tokens_seen),
+            'corpus_tokens': int(len(tokens)),
+            'val_loss': round(val, 4) if val == val else None,
+            'optimizer': args.optimizer,
+            'commit': commit,
+            'date': time.strftime('%Y-%m-%d'),
+        }
+
     print(f'training {args.steps} steps (batch {args.batch} x {args.accum} '
-          f'x ctx {args.ctx})...')
+          f'x ctx {args.ctx}) [commit {commit}]...')
     model.train()
     started = time.time()
     tokens_seen = 0
@@ -891,12 +906,14 @@ def main():
                   f'{core_note}', flush=True)
         if (step + 1) % 100 == 0 or step == args.steps - 1:
             v = eval_val(model, val_tokens, args.ctx)
+            last_val[0] = v
             print(f'  val loss {v:.4f} @ step {resumed_from + step + 1}',
                   flush=True)
 
         if (step + 1) % 200 == 0 or step == args.steps - 1:
             save_checkpoint(raw_model, config, args.model_dir,
-                            resumed_from + step, tok_path)
+                            resumed_from + step, tok_path,
+                            train_info(step + 1))
             print(f'checkpoint saved (step {resumed_from + step + 1})')
 
         if (args.max_minutes
@@ -907,7 +924,8 @@ def main():
             break
 
     save_checkpoint(raw_model, config, args.model_dir,
-                    resumed_from + steps_done - 1, tok_path)
+                    resumed_from + steps_done - 1, tok_path,
+                    train_info(steps_done))
     total = time.time() - started
     print(f'done: {steps_done} more steps ({resumed_from + steps_done} '
           f'total), {tokens_seen:,} tokens in {total / 60:.1f} min '
@@ -915,13 +933,35 @@ def main():
     print(f'next: python export_gguf.py --model_dir {args.model_dir}')
 
 
-def save_checkpoint(model, config, model_dir, step, tok_path):
+def git_commit():
+    """Short commit of the code that produced a model ('unknown' outside
+    a checkout). Stamped into checkpoints and GGUF files so there is
+    never a question about which build you are talking to."""
+    import subprocess
+    try:
+        out = subprocess.run(['git', '-C', ROOT, 'rev-parse', '--short',
+                              'HEAD'], capture_output=True, text=True,
+                             timeout=10)
+        sha = out.stdout.strip()
+        if sha and out.returncode == 0:
+            dirty = subprocess.run(['git', '-C', ROOT, 'status',
+                                    '--porcelain'], capture_output=True,
+                                   text=True, timeout=10).stdout.strip()
+            return sha + ('+' if dirty else '')
+    except Exception:
+        pass
+    return 'unknown'
+
+
+def save_checkpoint(model, config, model_dir, step, tok_path,
+                    train_info=None):
     import torch
     sd = split_state_dict(model.state_dict(), config)
     ckpt = {
         'config': config,
         'step': step + 1,
         'tokenizer': os.path.basename(tok_path),
+        'train_info': train_info or {},
         'state_dict': {k: v.cpu() for k, v in sd.items()},
     }
     path = os.path.join(model_dir, 'checkpoint.pt')

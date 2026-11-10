@@ -15,6 +15,7 @@ ChatML chat template so chat front-ends know how to prompt it.
 
 import argparse
 import os
+import time
 import sys
 
 import numpy as np
@@ -43,6 +44,15 @@ def export(model_dir, out_path, name='Lito-Chat'):
     config = ckpt['config']
     state = ckpt['state_dict']
     step = ckpt.get('step', '?')
+    info = dict(ckpt.get('train_info') or {})
+    info.setdefault('steps', step)
+    if not info.get('commit'):
+        try:
+            from train_big import git_commit
+            info['commit'] = git_commit()
+        except Exception:
+            info['commit'] = 'unknown'
+    info.setdefault('date', time.strftime('%Y-%m-%d'))
 
     tok = ByteBPE.load(os.path.join(model_dir, 'bpe_tokenizer.json'))
     n_vocab = max(tok.vocab_size, len(tok.vocab))
@@ -80,9 +90,26 @@ def export(model_dir, out_path, name='Lito-Chat'):
     w = writer
     w.add_string('general.name', name)
     w.add_string('general.source', 'https://github.com/OmniNodeCo/Lito')
+    # Provenance, so anyone holding the file can tell exactly which
+    # build it is - "is this the fixed model?" should never need a
+    # guess. Shown by the engine, /api/info and tools/chat_eval.py.
+    val = info.get('val_loss')
+    summary = (f"steps {info.get('steps', '?')}"
+               + (f", val loss {val}" if val else '')
+               + f", commit {info.get('commit')}, built {info.get('date')}")
     w.add_string('general.description',
                  'A small llama-architecture chat model trained from scratch '
-                 '(no pretrained weights) by the Lito project.')
+                 '(no pretrained weights) by the Lito project - ' + summary
+                 + '.')
+    w.add_string('lito.train.commit', str(info.get('commit')))
+    w.add_string('lito.train.date', str(info.get('date')))
+    w.add_uint32('lito.train.steps', int(info.get('steps') or 0))
+    w.add_uint64('lito.train.tokens', int(info.get('tokens') or 0))
+    w.add_uint64('lito.train.corpus_tokens',
+                 int(info.get('corpus_tokens') or 0))
+    w.add_string('lito.train.optimizer', str(info.get('optimizer') or 'muon'))
+    if val:
+        w.add_float32('lito.train.val_loss', float(val))
     w.add_uint32('general.file_type', 1)  # mostly f16
     w.add_string('llama.tensor_data_layout', 'Meta AI original pth')
 
@@ -132,6 +159,7 @@ def export(model_dir, out_path, name='Lito-Chat'):
     n_tensors = len(writer.tensors)
     print(f'exported checkpoint (step {step}) -> {out_path}')
     print(f'  {n_tensors} tensors, {n_vocab} vocab, {mb:.1f} MB, f16')
+    print(f'  provenance: {summary}')
     print(f'  vocab: {n_vocab} tokens, <|im_end|> id = {im_end}')
     return out_path
 

@@ -45,6 +45,13 @@ class LlamaEngine:
         meta, tensors = read_gguf(path)
         self.path = path
         self.name = meta.get('general.name', 'model')
+        self.description = meta.get('general.description', '')
+        # Provenance written by export_gguf.py: which code trained this
+        # file, for how long, and how well it validated.
+        self.train_info = {
+            key[len('lito.train.'):]: value
+            for key, value in meta.items() if key.startswith('lito.train.')
+        }
         arch = meta.get('general.architecture')
         if arch and arch != 'llama':
             raise ValueError(f'{path}: architecture {arch!r} is not "llama"')
@@ -290,6 +297,22 @@ class LlamaEngine:
         for marker in ('<|im_end|>', '<|im_start|>assistant'):
             text = text.replace(marker, '')
         return text.strip()
+
+    def build_summary(self):
+        """One line naming exactly which build this file is."""
+        info = self.train_info
+        if not info:
+            return f'{self.name} (no provenance - built before v1.2.6)'
+        bits = [f"commit {info.get('commit', '?')}"]
+        if info.get('steps'):
+            bits.append(f"{int(info['steps']):,} steps")
+        if info.get('tokens'):
+            bits.append(f"{int(info['tokens']):,} tokens")
+        if info.get('val_loss'):
+            bits.append(f"val loss {float(info['val_loss']):.4f}")
+        if info.get('date'):
+            bits.append(str(info['date']))
+        return f'{self.name}: ' + ', '.join(bits)
 
     # ------------------------------------------------------------------
     # Scoring (tests / perplexity)
