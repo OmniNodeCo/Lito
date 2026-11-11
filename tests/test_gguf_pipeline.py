@@ -740,6 +740,66 @@ def chat_core_arithmetic_and_facts_are_correct():
 
 
 @test
+def look_alike_prompts_are_taught_apart():
+    """'how are you' must not be drowned out by 'who are you'.
+
+    Both failures this guards against were real: the model answered the
+    identity blurb to "how are you", and wished the user good night at
+    breakfast, because the look-alike intent simply had more training
+    examples than the one being asked for.
+    """
+    import random as _random
+    import re as _re
+    from chatdata import build_chat_core, INTENTS, CONTRASTS, _intent
+
+    def phrasings(marker):
+        for entry in INTENTS:
+            users, _replies, _w = _intent(entry)
+            low = [u.lower() for u in users]
+            if marker in low:
+                return set(low)
+        raise AssertionError(f'no intent contains {marker!r}')
+
+    docs = build_chat_core(_random.Random(0))
+    groups = {name: phrasings(name) for name in
+              ('how are you', 'who are you', 'good morning', 'good night')}
+    seen = dict.fromkeys(groups, 0)
+    for doc in docs:
+        for turn in _re.findall(r'<\|im_start\|>user\n(.*?)<\|im_end\|>',
+                                doc, _re.S):
+            text = turn.strip().lower()
+            for name, group in groups.items():
+                if text in group:
+                    seen[name] += 1
+
+    # the question that was getting the wrong answer must be at least as
+    # well represented as the one whose answer was being stolen
+    assert seen['how are you'] >= seen['who are you'], seen
+    assert seen['good morning'] >= seen['good night'], seen
+
+    # and they are taught side by side, in one dialogue
+    pairs = [d for d in docs
+             if d.lower().count('<|im_start|>user') == 2
+             and 'morning' in d.lower() and 'night' in d.lower()]
+    assert pairs, 'no contrast dialogues were generated'
+    assert len(CONTRASTS) >= 4
+
+
+@test
+def every_capital_is_taught_in_every_phrasing():
+    """A fact seen once is learned as a shape, not a fact - which is how
+    'the capital of France is Morocco' happens."""
+    import random as _random
+    from chatdata import _knowledge_qa, CAPITALS
+    qa = _knowledge_qa(_random.Random(0))
+    asked = [u for u, a in qa if 'capital of France' in a]
+    assert len(asked) >= 4, asked
+    assert len(set(asked)) == len(asked), 'phrasings should all differ'
+    answers = {a for u, a in qa if a.startswith('The capital of')}
+    assert len(answers) == len(CAPITALS), (len(answers), len(CAPITALS))
+
+
+@test
 def instruction_filter_drops_list_shaped_answers():
     """Long markdown-list answers are what a tiny model turns into
     word salad with bullet points, so they are filtered out."""

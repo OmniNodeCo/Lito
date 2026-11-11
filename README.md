@@ -75,9 +75,19 @@ sets itself up: a first-run screen downloads the engine (about 30 MB,
 once) straight into the app folder — no installer, no terminal.
 ```
 
-Or run without a model — the dictionary, knowledge base and search all work
-without one; the server explains how to get `lito-chat.gguf` (download it
-from the version database, or train it — see below).
+**The model is in the box.** `lito-chat.gguf` (13.7 MB, f16) is committed to
+this repository, so a fresh clone talks back immediately — no download, no
+training run, no API key. It was trained from scratch by `train_big.py` on
+the corpus described below, and every copy states its own provenance:
+
+```bash
+python server.py        # then type /model in the chat
+# Lito-Chat: commit becdc38, 2,111 steps, 12,969,984 tokens, val loss 1.9546
+```
+
+Lito also runs without any model — the dictionary, knowledge base, calculator
+and search all work on their own — and you can swap in a different GGUF from
+the version database or train your own (see below).
 
 ## Example session
 
@@ -328,11 +338,16 @@ real prompts as a release gate.
 python tools/chat_eval.py -v          # grade hello / who are you / 2+3 / ...
 ```
 
-A 62-minute run on two CPU cores (1,179 steps, 7.2M tokens, validation
-loss 2.26) scores **86%** on that gate:
+The shipped model (87 minutes on two CPU cores, 2,111 steps, 13.0M
+tokens read, validation loss 1.95) scores **90%** on that gate, greedy
+*and* at the app's sampling temperature:
 
 ```
-hello                         -> Hi! What can I help you with?
+hello                         -> Hello! I'm Lito. Ask me anything you like.
+how are you                   -> I'm doing well, thank you for asking!
+                                 How are you?
+good morning                  -> Good morning! I hope your day is off to a
+                                 good start. How can I help?
 who are you                   -> I'm Lito! I'm a small from-scratch AI
                                  assistant. I like questions, stories and
                                  good conversation.
@@ -343,19 +358,30 @@ What is the capital of France?-> The capital of France is Paris.
 How many days are in a week?  -> There are seven days in a week.
 bye                           -> Goodbye! Thanks for chatting.
 tell me a story               -> Once upon a time, there was a little boy
-                                 named Tim. He had a toy car that he loved
-                                 to play with. One day, he went to the park
-                                 with his mom...
+                                 named Tim. He loved to play with his toy
+                                 car. One day, he went to the park with his
+                                 mom...
 ```
 
-What it still gets wrong: arithmetic ("7 plus 5 is 14" - the calculator
-extension answers those exactly, and runs first) and the odd near-miss
-intent ("good morning" can land on "good night"). 5.7M parameters is
+**Teaching look-alikes apart.** Every remaining intent error came from
+prompts that differ by one word: "how are you" was answered with the
+*identity* blurb, "good morning" with the good-night reply, and "the
+capital of France is Morocco" - a fact learned as a shape rather than a
+fact. The fix is in the data, not the parameter count: look-alike
+prompts are now taught side by side in one dialogue (`CONTRASTS` in
+`chatdata.py`), the question being confused is weighted above the
+question stealing its answer, and every capital is taught in all five
+phrasings instead of one at random. Greedy score went 81% -> 90% in a
+25-minute `--resume` pass; tests assert the balance so it cannot
+silently regress.
+
+What it still gets wrong: arithmetic ("7 plus 5 is 11" - the calculator
+extension answers those exactly, and runs first). 5.7M parameters is
 5.7M parameters.
 
-Decoding temperature matters more than you would expect at this size;
-averaged over four seeds of the gate: **greedy 86%**, 0.3 → 82%,
-0.7 → 71%, 0.9 → 64%. The app generates at **0.3**.
+Decoding temperature matters less now that the core is sharp:
+**greedy 90%**, and 0.3 → 90% on three seeds. The app generates at
+**0.3**.
 
 ### Training the model (`train_big.py` + `export_gguf.py`)
 

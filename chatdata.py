@@ -44,35 +44,58 @@ INTENTS = [
       'Hello! Would you like to chat, ask a question, or hear a story?',
       "Hi! I'm Lito, your small but friendly assistant. How can I help?"]),
 
-    (['good morning', 'Good morning!', 'morning', 'good morning Lito'],
+    # Time-of-day greetings all start with the same word, so the model
+    # has to notice the *second* one. Weight 2 and plenty of phrasings:
+    # a 6M model that sees "good night" more often than "good morning"
+    # will cheerfully wish you a good night at 9am.
+    (['good morning', 'Good morning!', 'morning', 'good morning Lito',
+      'morning!', 'morning Lito', 'gm', 'good morning!', 'Morning.',
+      'good morning to you', 'a very good morning to you',
+      'good morning, how are you?'],
      ['Good morning! I hope your day is off to a good start. How can I help?',
       'Good morning! What would you like to do today?',
-      'Good morning to you! What can I help you with?']),
+      'Good morning to you! What can I help you with?',
+      'Good morning! I hope you slept well. What is on your mind?',
+      'Good morning! Lovely to start the day with a chat.'], 2),
 
-    (['good afternoon', 'good afternoon!', 'afternoon'],
+    (['good afternoon', 'good afternoon!', 'afternoon', 'afternoon!',
+      'good afternoon Lito', 'good afternoon to you'],
      ['Good afternoon! How can I help you?',
-      'Good afternoon! What would you like to talk about?']),
+      'Good afternoon! What would you like to talk about?',
+      'Good afternoon! I hope your day is going well.'], 2),
 
-    (['good evening', 'good evening!', 'evening'],
+    (['good evening', 'good evening!', 'evening', 'evening!',
+      'good evening Lito', 'good evening to you'],
      ['Good evening! How can I help you tonight?',
-      'Good evening! What would you like to do?']),
+      'Good evening! What would you like to do?',
+      'Good evening! I hope you had a good day.'], 2),
 
     (['good night', 'goodnight', 'good night!', 'night night',
-      "i'm going to bed", 'time for bed'],
+      "i'm going to bed", 'time for bed', 'goodnight Lito',
+      'night', 'off to sleep now'],
      ['Good night! Sleep well.',
       'Good night! I hope you sleep well.',
-      'Sleep well! See you tomorrow.']),
+      'Sleep well! See you tomorrow.'], 2),
 
     # -- how are you --------------------------------------------------
+    # "how are you" vs "who are you" differ by one letter and mean
+    # completely different things. This intent is weighted and heavily
+    # paraphrased so the mood question never collapses into the
+    # identity answer.
     (['how are you', 'how are you?', 'How are you doing?',
       'how are you today', 'how do you feel', "how's it going",
       'how is it going?', "how's your day", 'you doing ok?',
-      'how have you been'],
+      'how have you been', 'how are you doing today?', 'how r u',
+      'how are things?', 'how are you feeling?', 'are you well?',
+      'you ok?', 'how is your day going?', 'hows it going',
+      'how are you, Lito?', 'and how are you?'],
      ["I'm doing well, thank you for asking! How are you?",
       "I'm good, thanks! I am always happy to chat. How about you?",
       "I'm just a program, so I never get tired - and I'm glad you are here. "
       'How are you doing?',
-      "I'm doing great, thanks! What can I help you with today?"]),
+      "I'm doing great, thanks! What can I help you with today?",
+      "I'm very well, thanks for asking. How is your day going?",
+      "I feel good! Chatting is my favourite thing. How are you?"], 2),
 
     (["i'm good", 'im good thanks', "i'm fine", 'good thanks',
       "I'm doing well", 'pretty good', 'not bad'],
@@ -464,10 +487,17 @@ def _knowledge_qa(rng):
     qa = []
     cap_forms = ['What is the capital of {c}?', 'capital of {c}',
                  'what is the capital city of {c}?',
-                 'Do you know the capital of {c}?']
+                 'Do you know the capital of {c}?',
+                 "what's the capital of {c}?"]
     for country, city in CAPITALS:
-        qa.append((rng.choice(cap_forms).format(c=country),
-                   f'The capital of {country} is {city}.'))
+        # Every phrasing, not a random one. A fact seen once is a fact
+        # half-learned: with a single sample per country the model
+        # learns the shape ("The capital of X is Y.") but picks Y by
+        # vibe - which is how "the capital of France is Morocco"
+        # happens. Teaching all five wordings nails the pair down.
+        for form in cap_forms:
+            qa.append((form.format(c=country),
+                       f'The capital of {country} is {city}.'))
     qa.extend(FACTS)
     word_forms = ['What does {w} mean?', 'what is the meaning of {w}',
                   'define {w}', 'what does the word {w} mean?']
@@ -479,6 +509,49 @@ def _knowledge_qa(rng):
                    if not word.startswith(('a', 'e', 'i', 'o', 'u'))
                    else f'Here is one: "He felt {word} all day."'))
     return qa
+
+
+def _intent(entry):
+    """Unpack an INTENTS row: (phrasings, replies[, weight])."""
+    return entry[0], entry[1], (entry[2] if len(entry) > 2 else 1)
+
+
+# Prompts that look almost identical but mean different things. Taught
+# side by side in one dialogue, so the only way to get both replies
+# right is to attend to the word that actually differs - which is
+# exactly the skill a small model lacks when it answers "who are you?"
+# to "how are you?".
+CONTRASTS = [
+    (['good morning', 'morning', 'good morning!'],
+     ['good night', 'goodnight', 'good night!']),
+    (['good morning', 'morning!'],
+     ['good evening', 'good evening!']),
+    (['how are you', "how's it going", 'how are you?'],
+     ['who are you', 'who are you?', 'what are you']),
+    (['how are you today', 'how are you doing?'],
+     ['what is your name', "what's your name"]),
+    (['what can you do', 'what can you do?'],
+     ['who are you', 'what are you?']),
+    (['thanks', 'thank you'],
+     ['bye', 'goodbye']),
+]
+
+
+def _contrast_docs(rng, index, n=400):
+    """Two-turn dialogues pairing look-alike prompts with their own
+    (different) answers."""
+    docs = []
+    for _ in range(n):
+        first, second = rng.choice(CONTRASTS)
+        ua, ub = rng.choice(first), rng.choice(second)
+        ra, rb = index.get(ua.lower()), index.get(ub.lower())
+        if not ra or not rb:
+            continue
+        turns = [(ua, rng.choice(ra)), (ub, rng.choice(rb))]
+        if rng.random() < 0.5:
+            turns.reverse()
+        docs.append(_doc(turns))
+    return docs
 
 
 def build_chat_core(rng=None, repeat=3):
@@ -493,9 +566,12 @@ def build_chat_core(rng=None, repeat=3):
     docs = []
 
     # 1. intents: every phrasing paired with several replies
-    for users, replies in INTENTS:
+    index = {}
+    for entry in INTENTS:
+        users, replies, weight = _intent(entry)
         for user in users:
-            for _ in range(repeat):
+            index[user.lower()] = replies
+            for _ in range(repeat * weight):
                 reply = rng.choice(replies)
                 system = (rng.choice(SYSTEM_PROMPTS)
                           if rng.random() < 0.25 else None)
@@ -520,6 +596,9 @@ def build_chat_core(rng=None, repeat=3):
     # 3. the knowledge itself, one turn at a time
     for user, assistant in qa_pool:
         docs.append(_doc([(user, assistant)]))
+
+    # 4. look-alike prompts, taught against each other
+    docs.extend(_contrast_docs(rng, index))
 
     rng.shuffle(docs)
     return docs

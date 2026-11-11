@@ -418,6 +418,28 @@ def brain_small_talk():
 
 
 @test
+def brain_time_of_day_greetings():
+    """'good morning' is a greeting, not a dictionary lookup.
+
+    It used to fall through small talk (because 'good' was not a
+    greeting word) and come back as "Good morning (noun): a
+    conventional expression of greeting or farewell".
+    """
+    brain = get_brain()
+    for text, expect in (('good morning', 'morning'),
+                         ('Good morning, Lito', 'morning'),
+                         ('morning', 'morning'),
+                         ('good afternoon', 'afternoon'),
+                         ('good evening', 'evening'),
+                         ('good night', 'goodnight'),
+                         ('night night', 'goodnight')):
+        answer = brain.think(text)
+        assert answer in brain.knowledge_base[expect], (text, answer)
+    # ...but asking *about* the phrase is still a dictionary question
+    assert '(noun)' in brain.think('what does good morning mean')
+
+
+@test
 def brain_search_request_offline():
     brain = get_brain()
     brain.set_search_enabled(False)

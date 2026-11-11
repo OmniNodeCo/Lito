@@ -769,6 +769,7 @@ def main():
           f'(d={args.d_model} L={args.n_layers} h={args.n_heads} ff={args.n_ff} ctx={args.ctx})')
 
     resumed_from = 0
+    prior_tokens = 0
     ckpt_path = os.path.join(args.model_dir, 'checkpoint.pt')
     if args.resume and os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
@@ -781,7 +782,10 @@ def main():
             state = fuse_state_dict(state)
         model.load_state_dict(state)
         resumed_from = ckpt.get('step', 0)
-        print(f'resumed weights from step {resumed_from}')
+        prior_info = ckpt.get('train_info') or {}
+        prior_tokens = int(prior_info.get('tokens') or 0)
+        print(f'resumed weights from step {resumed_from}'
+              + (f' ({prior_tokens:,} tokens so far)' if prior_tokens else ''))
 
     raw_model = model      # torch.compile wraps the module; save from this
     if args.compile:
@@ -847,7 +851,9 @@ def main():
         val = last_val[0]
         return {
             'steps': resumed_from + done,
-            'tokens': int(tokens_seen),
+            # tokens are cumulative across --resume runs: the model was
+            # shaped by everything it has ever read, not just this hour
+            'tokens': prior_tokens + int(tokens_seen),
             'corpus_tokens': int(len(tokens)),
             'val_loss': round(val, 4) if val == val else None,
             'optimizer': args.optimizer,

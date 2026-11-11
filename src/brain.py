@@ -91,6 +91,22 @@ class AIBrain:
                 "Hi there! I'm ready to help you with questions, conversation, or just chatting.",
                 "Hey! Nice to meet you. I'm an AI assistant. What would you like to talk about?",
             ],
+            'morning': [
+                "Good morning! I hope your day is off to a good start. How can I help?",
+                "Good morning! What would you like to do today?",
+            ],
+            'afternoon': [
+                "Good afternoon! How can I help you?",
+                "Good afternoon! What would you like to talk about?",
+            ],
+            'evening': [
+                "Good evening! How can I help you tonight?",
+                "Good evening! What would you like to do?",
+            ],
+            'goodnight': [
+                "Good night! Sleep well.",
+                "Good night! I hope you sleep well - come back any time.",
+            ],
             'identity': [
                 f"I'm Lito {format_version(__version__)}, a neural network-based AI built "
                 "entirely from scratch in Python. I use a transformer architecture with "
@@ -462,9 +478,24 @@ class AIBrain:
         def pick(key) -> str:
             return str(np.random.choice(self.knowledge_base[key]))
 
+        # Time-of-day greetings. "good morning" is a hello, not a request
+        # for the dictionary entry of the phrase - and "good night" is a
+        # goodbye, not a hello.
+        tod = re.fullmatch(r"(?:a )?(?:very )?good[- ](morning|afternoon|evening|night)"
+                           r"(?:,? (?:lito|to you|everyone|all))?", text)
+        if tod:
+            part = tod.group(1)
+            return pick('goodnight' if part == 'night' else part)
+        if re.fullmatch(r"(?:good)?night(?: night)?", text):
+            return pick('goodnight')
+
         greeting_words = {'hi', 'hello', 'hey', 'howdy', 'yo', 'greetings',
                           'morning', 'afternoon', 'evening', 'sup', 'whats', 'up'}
         if only(greeting_words) and (tokens & greeting_words):
+            if tokens & {'morning', 'afternoon', 'evening'}:
+                for part in ('morning', 'afternoon', 'evening'):
+                    if part in tokens:
+                        return pick(part)
             return pick('greetings')
 
         if re.search(r"how (are|is) (you|it going|things|your day)", text):
