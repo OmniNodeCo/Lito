@@ -107,6 +107,12 @@ class LitoServer:
                             search_enabled=self.search_enabled,
                             extensions=self.ext)
             brain.initialize()
+            if brain.loaded and hasattr(brain.model, 'build_summary'):
+                print(f'  build: {brain.model.build_summary()}')
+                if not getattr(brain.model, 'train_info', None):
+                    print('  WARNING: this model file predates v1.2.6 and is '
+                          'probably the old word-salad build.')
+                    print('           Check it with: python tools/doctor.py')
             with self._brain_lock:
                 self.brain = brain
                 self.brain_dir = model_path
@@ -123,6 +129,14 @@ class LitoServer:
             'error': self.brain_error,
             'model': os.path.basename(self.brain_dir) if self.brain_dir else '',
             'params': getattr(brain.model, '_param_count', 0) if brain and brain.loaded else 0,
+            'build': (brain.model.build_summary()
+                      if brain and brain.loaded
+                      and hasattr(brain.model, 'build_summary') else ''),
+            # A model file with no provenance was exported before v1.2.6,
+            # i.e. it is the old undertrained build that answers in word
+            # salad. Say so instead of quietly serving it.
+            'stale': bool(brain and brain.loaded
+                          and not getattr(brain.model, 'train_info', None)),
             'search': bool(brain.search.enabled) if brain else self.search_enabled,
         }
 
@@ -326,6 +340,8 @@ def make_handler(server_state: LitoServer):
                               if brain and brain.loaded
                               and hasattr(brain.model, 'build_summary')
                               else ''),
+                    'stale': bool(brain and brain.loaded
+                                  and not getattr(brain.model, 'train_info', None)),
                     'vocab_size': (brain.model.vocab_size if brain and brain.loaded
                                    and brain.model else ''),
                     'search': bool(brain.search.enabled) if brain else self.state.search_enabled,
@@ -460,6 +476,7 @@ def main():
     print(f'  listening on {args.host}:{httpd.server_address[1]}')
     model = state.resolve_model_path(state.startup_dir)
     print(f'  model: {os.path.basename(model) if model else "(none found)"}')
+
     print(f'  press Ctrl+C to stop')
     if not args.no_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

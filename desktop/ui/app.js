@@ -75,12 +75,23 @@ async function refreshStatus() {
   $("model-chip-text").textContent =
     s.model ? `${s.model} · ${s.loaded ? s.params.toLocaleString() + " params" : "knowledge base"}` : "no model";
   const dot = $("model-dot");
-  dot.className = "dot " + (s.loaded ? "on" : s.loading ? "loading" : "");
+  dot.className = "dot " + (s.loaded ? (s.stale ? "warn" : "on") : s.loading ? "loading" : "");
+  // Hovering the chip says exactly which build is answering you, so
+  // "why is it talking nonsense?" is one tooltip away from an answer.
+  $("model-chip").title = s.build || (s.loaded ? "" : "no model loaded");
   $("foot-status").textContent = s.loading
     ? "loading model…"
     : s.loaded
-      ? `model ready · ${s.params.toLocaleString()} params`
+      ? (s.stale
+          ? "⚠ old model build — run tools/doctor.py"
+          : `model ready · ${s.params.toLocaleString()} params`)
       : "knowledge base only (download a model)";
+  $("foot-status").title = s.build || "";
+  if (s.loaded && s.stale && !state.staleWarned) {
+    state.staleWarned = true;
+    toast("This model file predates v1.2.6 — it may answer in word salad. " +
+          "Replace it with the lito-chat.gguf from the repo.", "warn");
+  }
   $("send").disabled = state.sending || s.loading;
   if (s.search !== undefined) $("search-toggle").checked = s.search;
 }

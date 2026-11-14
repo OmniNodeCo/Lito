@@ -199,6 +199,8 @@ body {
 .chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim); }
 .chip .dot.on { background: var(--ok); box-shadow: 0 0 8px rgba(63, 185, 80, 0.6); }
 .chip .dot.loading { background: #d29922; animation: pulse 1.2s infinite; }
+/* amber: a model is loaded, but it is an old build with no provenance */
+.chip .dot.warn { background: #d29922; box-shadow: 0 0 8px rgba(210, 153, 34, 0.6); }
 
 /* chat */
 #chat-wrap { flex: 1; overflow-y: auto; scroll-behavior: smooth; }
@@ -361,6 +363,7 @@ body {
 }
 .toast.error { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--ok); }
+.toast.warn { border-left-color: #d29922; }
 
 /* skeletons + animations */
 .skeleton-row {

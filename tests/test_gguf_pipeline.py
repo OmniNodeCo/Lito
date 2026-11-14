@@ -285,6 +285,8 @@ def _skip_if_no_torch():
 def muon_orthogonalizes_updates():
     """Newton-Schulz must return (approximately) orthogonal matrices, and
     Muon must descend: the fast-training optimizer used by train_big.py."""
+    if _skip_if_no_torch():
+        return
     import torch
     from train_big import zeropower_via_newtonschulz5, Muon
     torch.manual_seed(4)
@@ -857,6 +859,33 @@ def core_anneal_ramps_only_at_the_end():
     assert abs(core_fraction(1.0, anneal=0.3, mix=0.5) - 0.5) < 1e-9
     assert core_fraction(1.0, anneal=0.0) == 0.0      # switched off
     assert core_fraction(2.0, anneal=0.3, mix=0.5) == 0.5   # clamped
+
+
+@test
+def doctor_flags_a_stale_model_and_blesses_the_shipped_one():
+    """`python tools/doctor.py` must answer "is this the good model?"
+    without the user having to know anything about provenance keys."""
+    import contextlib
+    import io
+    sys.path.insert(0, os.path.join(REPO_ROOT, 'tools'))
+    import doctor
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stale = os.path.join(tmp, 'lito-chat.gguf')
+        _write_synthetic_gguf(stale)        # random weights, no provenance
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = doctor.main(['-m', stale])
+        out = buf.getvalue()
+    assert code == doctor.DEGRADED, code
+    assert 'no provenance' in out, out[:400]
+    assert 'predates v1.2.6' in out, out[:400]
+    assert 'checkout lito-chat.gguf' in out, out[:400]
+
+    # ...and the model committed to this repo passes its own check
+    shipped = os.path.join(REPO_ROOT, 'lito-chat.gguf')
+    if os.path.isfile(shipped):
+        assert doctor.main(['-m', shipped, '--quiet']) == doctor.HEALTHY
 
 
 @test

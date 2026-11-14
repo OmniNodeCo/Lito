@@ -311,8 +311,11 @@ model is a standard GGUF, the identical file runs offline in anything
 that speaks llama.cpp:
 
 ```bash
-llama-cli -m lito-chat.gguf --temp 0.8 --repeat-penalty 1.1
-# ...or drop the file into LM Studio / Ollama
+# -cnv matters: it applies the ChatML template stored in the file.
+# Without it llama-cli *completes* your text instead of replying to it,
+# and a 5.7M model completing "hello" reads like word salad.
+llama-cli -m lito-chat.gguf -cnv --temp 0.3 --repeat-penalty 1.1
+# ...or drop the file into LM Studio / Ollama, which read the template
 ```
 
 The file is self-describing: llama architecture metadata, the full BPE
@@ -382,6 +385,36 @@ extension answers those exactly, and runs first). 5.7M parameters is
 Decoding temperature matters less now that the core is sharp:
 **greedy 90%**, and 0.3 → 90% on three seeds. The app generates at
 **0.3**.
+
+### "Which model is answering me?" (`tools/doctor.py`)
+
+Nonsense out of a chat model is nearly always the *wrong file*, not a
+broken one - a copy left over from an older release, or a shadowed
+download. So the question is answerable in one command:
+
+```bash
+python tools/doctor.py
+```
+
+```
+models found (1):
+  -> /home/you/Lito/lito-chat.gguf  (13.7 MB)
+
+interviewing lito-chat.gguf:
+  build : Lito-Chat: commit becdc38, 2,111 steps, 12,969,984 tokens,
+          val loss 1.9546, 2026-11-11
+  ok   hello          -> Hello! I'm Lito. Ask me anything you like.
+  ok   how are you    -> I'm doing well, thank you for asking! How are you?
+  ...
+verdict: healthy - 6/6 first-contact answers are clean English
+```
+
+It lists every candidate GGUF (marking the one that wins and the ones it
+shadows), prints each file's provenance, and interviews the winner. Exit
+code 0 healthy, 1 degraded, 2 no model, so CI and scripts can use it too.
+A file with **no provenance** predates v1.2.6 and is almost certainly the
+old undertrained build: the server says so on startup, the desktop chip
+turns amber, and `/model` in the chat prints the same line.
 
 ### Training the model (`train_big.py` + `export_gguf.py`)
 
