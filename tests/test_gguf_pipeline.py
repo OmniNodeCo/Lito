@@ -862,6 +862,33 @@ def core_anneal_ramps_only_at_the_end():
 
 
 @test
+def a_stale_model_cannot_shadow_a_good_one():
+    """A leftover pre-v1.2.6 download in a higher-priority directory
+    used to win the load and answer in word salad."""
+    from src.brain import AIBrain
+    with tempfile.TemporaryDirectory() as tmp:
+        stale = os.path.join(tmp, 'lito-chat.gguf')
+        _write_synthetic_gguf(stale)           # no lito.train.* keys
+        assert AIBrain.model_has_provenance(stale) is False
+
+        shipped = os.path.join(REPO_ROOT, 'lito-chat.gguf')
+        if os.path.isfile(shipped):
+            assert AIBrain.model_has_provenance(shipped) is True
+            # whichever order they turn up in, the real model wins
+            assert AIBrain.rank_models([stale, shipped])[0] == shipped
+            assert AIBrain.rank_models([shipped, stale])[0] == shipped
+            # equals keep their location order (the caller's priority)
+            assert AIBrain.rank_models([shipped, shipped]) == [shipped, shipped]
+
+        # a missing or unreadable file is ranked last, never a crash
+        assert AIBrain.model_has_provenance(os.path.join(tmp, 'nope.gguf')) is False
+        junk = os.path.join(tmp, 'junk.gguf')
+        open(junk, 'wb').write(b'not a gguf at all')
+        assert AIBrain.model_has_provenance(junk) is False
+        assert AIBrain.rank_models([junk, stale]) == [junk, stale]
+
+
+@test
 def doctor_flags_a_stale_model_and_blesses_the_shipped_one():
     """`python tools/doctor.py` must answer "is this the good model?"
     without the user having to know anything about provenance keys."""
@@ -886,6 +913,10 @@ def doctor_flags_a_stale_model_and_blesses_the_shipped_one():
     shipped = os.path.join(REPO_ROOT, 'lito-chat.gguf')
     if os.path.isfile(shipped):
         assert doctor.main(['-m', shipped, '--quiet']) == doctor.HEALTHY
+        # the shipped model is the one git has, which is how the doctor
+        # tells "you downloaded this" from "this came with the repo"
+        assert doctor.git_state(shipped) in ('tracked-clean', ''), \
+            doctor.git_state(shipped)
 
 
 @test

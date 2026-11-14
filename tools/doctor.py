@@ -47,6 +47,34 @@ def find_candidates(explicit=None):
     return AIBrain.find_gguf_models()
 
 
+def git_state(path):
+    """Is this file the model git has committed, or something else?
+
+    Returns 'tracked-clean', 'tracked-modified', 'untracked' or ''.
+    The interesting case is a downloaded model sitting where the
+    repository's own model belongs: `git pull` refuses to overwrite it,
+    so people keep running the old brain and never find out why.
+    """
+    import subprocess
+    repo = os.path.dirname(os.path.abspath(path))
+    name = os.path.basename(path)
+    try:
+        out = subprocess.run(['git', '-C', repo, 'status', '--porcelain',
+                              '--', name], capture_output=True, text=True,
+                             timeout=10)
+        if out.returncode != 0:
+            return ''
+        line = out.stdout.strip()
+        if not line:
+            tracked = subprocess.run(
+                ['git', '-C', repo, 'ls-files', '--error-unmatch', '--', name],
+                capture_output=True, text=True, timeout=10)
+            return 'tracked-clean' if tracked.returncode == 0 else ''
+        return 'untracked' if line.startswith('??') else 'tracked-modified'
+    except Exception:
+        return ''
+
+
 def check(path, verbose=True):
     """Load one model, interview it, grade the answers."""
     from src.llama_np import LlamaEngine
@@ -132,7 +160,24 @@ def main(argv=None):
               'are clean English')
         if not healthy:
             print()
-            if stale:
+            state = git_state(candidates[0])
+            if state in ('untracked', 'tracked-modified'):
+                # The common case: a model downloaded before the trained
+                # one shipped in the repo. `git pull` will not overwrite
+                # it, so the old brain survives every update.
+                word = ('is not tracked by git' if state == 'untracked'
+                        else 'differs from the committed one')
+                print(f'  Your lito-chat.gguf {word}, so it is NOT the model '
+                      'this repo ships')
+                print('  - and git will refuse to overwrite it on pull. '
+                      'Swap it out:')
+                print()
+                print('      mv lito-chat.gguf lito-chat.gguf.old')
+                print('      git checkout -- lito-chat.gguf   '
+                      '# or: git pull')
+                print('      python tools/doctor.py')
+                print()
+            elif stale:
                 print('  This file predates v1.2.6 and does not say how it '
                       'was built.')
                 print('  The current model is committed to the repo - '

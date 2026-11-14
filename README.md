@@ -386,6 +386,31 @@ Decoding temperature matters less now that the core is sharp:
 **greedy 90%**, and 0.3 → 90% on three seeds. The app generates at
 **0.3**.
 
+### Nonsense in your clone? Read this first
+
+If `hello` comes back as word salad, the file answering you is almost
+certainly **not** the model this repo ships. Until recently
+`lito-chat.gguf` was gitignored, so a clone from back then has whatever
+model you downloaded - and `git pull` *will not* replace it:
+
+```
+error: The following untracked working tree files would be overwritten
+by merge:  lito-chat.gguf
+```
+
+Git aborts, you keep the old brain, and nothing looks wrong. The cure:
+
+```bash
+mv lito-chat.gguf lito-chat.gguf.old   # keep it, or just delete it
+git pull                               # now the committed model lands
+python tools/doctor.py                 # verdict: healthy - 6/6
+```
+
+`tools/doctor.py` detects this exact case and prints those commands.
+Models that do not state their provenance are also ranked *below* ones
+that do, so a leftover download can no longer shadow a good model just
+by sitting in a higher-priority folder.
+
 ### "Which model is answering me?" (`tools/doctor.py`)
 
 Nonsense out of a chat model is nearly always the *wrong file*, not a

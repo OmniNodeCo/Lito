@@ -235,10 +235,31 @@ class AIBrain:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def model_has_provenance(path):
+        """True if this GGUF says how it was built (v1.2.6 or later).
+
+        Reads the header only - no weights - so ranking every candidate
+        on a cold start costs microseconds.
+        """
+        try:
+            from .gguf import read_gguf_metadata
+            meta, _shapes = read_gguf_metadata(path)
+            return any(k.startswith('lito.train.') for k in meta)
+        except Exception:
+            return False
+
+    @staticmethod
     def find_gguf_models():
         """Candidate lito-chat.gguf locations, best first:
         an exported model next to the code, models downloaded by the
-        version database, and (frozen engine) the bundled copy."""
+        version database, and (frozen engine) the bundled copy.
+
+        Files that state their provenance are preferred over files that
+        do not: a leftover pre-v1.2.6 download sitting in a
+        higher-priority directory used to silently shadow a good model
+        and answer in word salad. Location order still decides between
+        equals, so an intentional export next to the code wins.
+        """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         candidates = [os.path.join(root, 'lito-chat.gguf')]
         models_dir = os.path.join(root, 'models')
@@ -261,7 +282,20 @@ class AIBrain:
                         p = os.path.join(sub, name, 'lito-chat.gguf')
                         if os.path.isfile(p):
                             candidates.append(p)
-        return [c for c in candidates if os.path.isfile(c)]
+        found, seen = [], set()
+        for c in candidates:
+            real = os.path.realpath(c)
+            if os.path.isfile(c) and real not in seen:
+                seen.add(real)
+                found.append(c)
+        return AIBrain.rank_models(found)
+
+    @staticmethod
+    def rank_models(paths):
+        """Best model first: ones that state their provenance, then the
+        rest. Stable, so location order decides between equals."""
+        return sorted(paths,
+                      key=lambda p: 0 if AIBrain.model_has_provenance(p) else 1)
 
     def initialize(self):
         """Load the GGUF chat model (the engine runs it in numpy)."""
