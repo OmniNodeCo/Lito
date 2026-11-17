@@ -1,75 +1,203 @@
 """
 The AI Brain - combines all components into an intelligent system.
-Includes pattern matching, knowledge retrieval, and generation.
+
+Pipeline for every message:
+1. Understand the sentence (src/nlp.py): segmentation, clause splitting,
+   lemmatization, negation, question type, coreference, spelling.
+2. Route each clause: small talk, dictionary lookups (definition / spelling /
+   synonyms / word validity), search requests, knowledge retrieval.
+3. Retrieve knowledge with BM25 ranking over the built-in knowledge base
+   and training corpus.
+4. Fall back to live web search (Wikipedia + DuckDuckGo) when local
+   knowledge is not confident.
+5. Optionally blend in neural generation from the trained model.
 """
 
-import numpy as np
 import os
 import re
-from typing import Optional, List, Dict
-from .model import TransformerLM
-from .tokenizer import BPETokenizer
+import sys
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+
+from .llama_np import LlamaEngine
 from .dataset import TrainingData
+from .dictionary import EnglishDictionary, WordEntry
+from .quality import looks_like_english
+from .nlp import (Analyzer, Clause, Analysis, BM25Index, split_sentences,
+                  tokenize, IS_WORD_PATTERNS)
+from .search import WebSearch, SearchResult
+from .extensions import ExtensionManager
+from .version import __version__, format_version
+
+# BM25 score at/above which local knowledge is considered a confident match
+# (combined with query-term coverage - see _retrieve_knowledge).
+KNOWLEDGE_CONFIDENCE_THRESHOLD = 4.0
+# A very high BM25 score is confident on its own, regardless of coverage.
+KNOWLEDGE_STRONG_SCORE = 8.0
+# Below this, even a top match is treated as weak (search may be tried first).
+KNOWLEDGE_WEAK_THRESHOLD = 2.0
 
 
 class AIBrain:
     """
     The central AI system that combines:
     - Neural network language model
-    - Pattern matching
-    - Knowledge base
-    - Conversation management
+    - Pattern matching and small talk
+    - The full English dictionary (WordNet + 370k word list)
+    - BM25 knowledge retrieval
+    - Live web search
+    - Conversation management with coreference tracking
     """
 
-    def __init__(self, model_dir: str = 'checkpoints'):
-        self.model_dir = model_dir
-        self.model: Optional[TransformerLM] = None
-        self.tokenizer: Optional[BPETokenizer] = None
+    def __init__(self, model_path: Optional[str] = None, search_enabled: bool = True,
+                 dictionary_online: bool = True, learn_file: Optional[str] = None,
+                 extensions: Optional[ExtensionManager] = None):
+        self.model_path = model_path
+        self.model: Optional[LlamaEngine] = None
         self.conversation_history: List[Dict[str, str]] = []
         self.knowledge_base = self._build_knowledge_base()
         self.loaded = False
 
-    def _build_knowledge_base(self) -> Dict[str, List[str]]:
+        # New capabilities
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(_root, 'data')
+        self.dictionary = EnglishDictionary(data_dir=data_dir, online=dictionary_online,
+                                            learn_file=learn_file)
+        self.analyzer = Analyzer(self.dictionary, spellcheck=True)
+        self.search = WebSearch(cache_dir=os.path.join(data_dir, 'cache'),
+                                enabled=search_enabled)
+        self.last_topic = ''
+        self._index: Optional[BM25Index] = None
+        self._last_knowledge: List[Tuple[str, float]] = []
+        # True once any clause of the current turn got a real answer from a
+        # concrete source (social, dictionary, knowledge, search, learning).
+        self._turn_answered = False
+        # Optional extensions (calculator, dice, ...). A shared manager can
+        # be injected (the GUI does this so its toggles apply immediately);
+        # by default every brain builds its own from extensions/.
+        self.extensions = (extensions if extensions is not None
+                           else ExtensionManager())
+
+    # ------------------------------------------------------------------
+    # Knowledge base
+    # ------------------------------------------------------------------
+
+    def _build_knowledge_base(self) -> Dict:
         """Build a structured knowledge base for retrieval."""
         kb = {
             'greetings': [
-                "Hello! I'm SmartAI, an artificial intelligence built from scratch. How can I help you?",
+                "Hello! I'm Lito, an artificial intelligence built from scratch. How can I help you?",
                 "Hi there! I'm ready to help you with questions, conversation, or just chatting.",
                 "Hey! Nice to meet you. I'm an AI assistant. What would you like to talk about?",
             ],
+            'morning': [
+                "Good morning! I hope your day is off to a good start. How can I help?",
+                "Good morning! What would you like to do today?",
+            ],
+            'afternoon': [
+                "Good afternoon! How can I help you?",
+                "Good afternoon! What would you like to talk about?",
+            ],
+            'evening': [
+                "Good evening! How can I help you tonight?",
+                "Good evening! What would you like to do?",
+            ],
+            'goodnight': [
+                "Good night! Sleep well.",
+                "Good night! I hope you sleep well - come back any time.",
+            ],
             'identity': [
-                "I'm SmartAI, a neural network-based AI built entirely from scratch in Python. "
-                "I use a transformer architecture with self-attention, trained on a knowledge corpus.",
-                "I'm an artificial intelligence created without using any pre-trained models. "
-                "My neural network was designed and trained from the ground up.",
+                f"I'm Lito {format_version(__version__)}, a neural network-based AI built "
+                "entirely from scratch in Python. I use a transformer architecture with "
+                "self-attention, trained on a knowledge corpus.",
+                f"I'm Lito {format_version(__version__)}, an artificial intelligence created "
+                "without using any pre-trained models. My neural network was designed and "
+                "trained from the ground up.",
             ],
             'capabilities': [
-                "I can answer questions, have conversations, explain concepts, help with reasoning, "
-                "and generate text. I was trained on knowledge spanning science, math, technology, "
-                "history, and more.",
-                "My abilities include text generation, question answering, and conversation. "
-                "I learn from patterns in my training data to provide helpful responses.",
+                "I can answer questions, have conversations, explain concepts, define any English "
+                "word from my built-in dictionary, search the web for current facts, and generate "
+                "text. When I meet a word or term I don't know, I look it up online and add it to "
+                "my dictionary so I remember it. I understand complex, multi-part sentences and "
+                "remember what we talked about.",
+                "My abilities include question answering, dictionary lookups with definitions and "
+                "synonyms, live web search, learning new words, spelling corrections, and "
+                "conversation.",
+            ],
+            'howareyou': [
+                "I'm doing great, thank you for asking! All my tensors are in a good mood today. "
+                "How can I help you?",
+                "Running smoothly! As an AI I don't have feelings exactly, but I'm fully "
+                "operational and happy to chat.",
+            ],
+            'thanks': [
+                "You're welcome! Feel free to ask me anything else.",
+                "Happy to help! Let me know if you have more questions.",
+            ],
+            'bye': [
+                "Goodbye! It was great chatting with you.",
+                "See you later! Come back anytime.",
+            ],
+            'apology': [
+                "No problem at all! Is there anything I can help you with?",
+                "No worries at all - it's completely fine. What would you like to talk about?",
+                "It's all good! I'm here whenever you need me.",
+            ],
+            'acknowledgment': [
+                "Great! Let me know if you have any questions.",
+                "Got it! Is there anything else you'd like to know?",
+                "Cool! I'm here if you need me.",
+                "Alright! What would you like to do next?",
+            ],
+            'negation': [
+                "Okay, understood. Is there something else I can help you with?",
+                "No problem! Let me know what you'd like to do instead.",
+            ],
+            'praise': [
+                "Thank you, that's very kind! I'm doing my best. What else can I help you with?",
+                "Thanks! I'm glad I could help. Anything else you'd like to know?",
+            ],
+            'criticism': [
+                "Fair enough - I'm a small AI built entirely from scratch, so I still get "
+                "things wrong. Tell me what I missed and I'll do better.",
+                "You're right to push back - I do make mistakes. Tell me what I got wrong, "
+                "or ask me to search the web for a reliable answer.",
+                "Ouch, fair. I'm learning as I go - what exactly did I get wrong?",
+            ],
+            'idk': [
+                "That's okay! Feel free to ask me anything - I can explain "
+                "concepts, define words, or search the web for you.",
+            ],
+            'help': [
+                "Sure, I'm happy to help! You can ask me questions (like 'what "
+                "is gravity?'), ask for definitions, synonyms or spellings, or "
+                "ask me to search the web for current facts. What would you "
+                "like to do?",
             ],
             'science': {
                 'physics': [
-                    "Physics studies the fundamental laws of nature including forces, energy, and matter.",
+                    "Physics studies the fundamental laws of nature including forces, energy, and matter. "
                     "Key concepts include gravity, electromagnetism, quantum mechanics, and relativity.",
+                    "Gravity is a fundamental force of nature that attracts objects with mass toward "
+                    "each other. Isaac Newton described gravity mathematically, and Albert Einstein "
+                    "later refined our understanding with general relativity.",
                 ],
                 'biology': [
-                    "Biology is the study of living organisms and their interactions.",
+                    "Biology is the study of living organisms and their interactions. "
                     "Key topics include genetics, evolution, ecology, and cell biology.",
                 ],
                 'chemistry': [
-                    "Chemistry studies the composition, structure, and properties of matter.",
+                    "Chemistry studies the composition, structure, and properties of matter. "
                     "The periodic table organizes elements by atomic number and chemical properties.",
                 ],
             },
             'math': [
-                "Mathematics provides the language for describing patterns and relationships in nature.",
+                "Mathematics provides the language for describing patterns and relationships in nature. "
                 "Key branches include algebra, geometry, calculus, statistics, and number theory.",
             ],
             'technology': [
-                "Technology encompasses tools and methods created to solve problems.",
+                "Technology encompasses tools and methods created to solve problems. "
                 "Computing, AI, the internet, and biotechnology are transforming our world.",
             ],
             'fallback': [
@@ -80,241 +208,1066 @@ class AIBrain:
         }
         return kb
 
+    def _iter_kb_documents(self):
+        """Yield (doc_id, text) pairs for every knowledge base entry."""
+        for key, value in self.knowledge_base.items():
+            if isinstance(value, list):
+                for i, text in enumerate(value):
+                    yield f'kb:{key}:{i}', text
+            elif isinstance(value, dict):
+                for subkey, subtexts in value.items():
+                    for i, text in enumerate(subtexts):
+                        yield f'kb:{key}:{subkey}:{i}', text
+
+    def _ensure_index(self) -> BM25Index:
+        """Build (once) the BM25 index over the knowledge base + corpus."""
+        if self._index is None:
+            index = BM25Index()
+            for doc_id, text in self._iter_kb_documents():
+                index.add(doc_id, text)
+            for i, text in enumerate(TrainingData.get_training_corpus()):
+                index.add(f'corpus:{i}', text)
+            self._index = index
+        return self._index
+
+    # ------------------------------------------------------------------
+    # Model loading
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def model_has_provenance(path):
+        """True if this GGUF says how it was built (v1.2.6 or later).
+
+        Reads the header only - no weights - so ranking every candidate
+        on a cold start costs microseconds.
+        """
+        try:
+            from .gguf import read_gguf_metadata
+            meta, _shapes = read_gguf_metadata(path)
+            return any(k.startswith('lito.train.') for k in meta)
+        except Exception:
+            return False
+
+    @staticmethod
+    def find_gguf_models():
+        """Candidate lito-chat.gguf locations, best first:
+        an exported model next to the code, models downloaded by the
+        version database, and (frozen engine) the bundled copy.
+
+        Files that state their provenance are preferred over files that
+        do not: a leftover pre-v1.2.6 download sitting in a
+        higher-priority directory used to silently shadow a good model
+        and answer in word salad. Location order still decides between
+        equals, so an intentional export next to the code wins.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates = [os.path.join(root, 'lito-chat.gguf')]
+        models_dir = os.path.join(root, 'models')
+        if os.path.isdir(models_dir):
+            for name in sorted(os.listdir(models_dir), reverse=True):
+                p = os.path.join(models_dir, name, 'lito-chat.gguf')
+                if os.path.isfile(p):
+                    candidates.append(p)
+        # Frozen engine: PyInstaller bundles data next to the executable
+        # (sys._MEIPASS when running from the one-folder build).
+        frozen = getattr(sys, '_MEIPASS', None)
+        for base in (frozen, os.path.dirname(os.path.abspath(sys.executable))):
+            if base and os.path.isdir(base):
+                p = os.path.join(base, 'lito-chat.gguf')
+                if os.path.isfile(p):
+                    candidates.append(p)
+                sub = os.path.join(base, 'models')
+                if os.path.isdir(sub):
+                    for name in sorted(os.listdir(sub), reverse=True):
+                        p = os.path.join(sub, name, 'lito-chat.gguf')
+                        if os.path.isfile(p):
+                            candidates.append(p)
+        found, seen = [], set()
+        for c in candidates:
+            real = os.path.realpath(c)
+            if os.path.isfile(c) and real not in seen:
+                seen.add(real)
+                found.append(c)
+        return AIBrain.rank_models(found)
+
+    @staticmethod
+    def rank_models(paths):
+        """Best model first: ones that state their provenance, then the
+        rest. Stable, so location order decides between equals."""
+        return sorted(paths,
+                      key=lambda p: 0 if AIBrain.model_has_provenance(p) else 1)
+
     def initialize(self):
-        """Initialize or load the AI model."""
-        tokenizer_path = os.path.join(self.model_dir, 'tokenizer.json')
-        model_path = os.path.join(self.model_dir, 'best_model.npz')
-
-        if not os.path.exists(model_path):
-            model_path = os.path.join(self.model_dir, 'final_model.npz')
-
-        if os.path.exists(tokenizer_path) and os.path.exists(model_path):
-            print("Loading trained model...")
-            self.tokenizer = BPETokenizer()
-            self.tokenizer.load(tokenizer_path)
-
-            # Load config from model
-            loaded = np.load(model_path, allow_pickle=True)
-            if 'config' in loaded:
-                import json
-                config = json.loads(str(loaded['config']))
-            else:
-                config = {
-                    'vocab_size': self.tokenizer.vocab_size,
-                    'd_model': 128,
-                    'n_heads': 4,
-                    'n_layers': 4,
-                    'd_ff': 512,
-                    'max_seq_len': 256,
-                }
-
-            self.model = TransformerLM(
-                vocab_size=config['vocab_size'],
-                d_model=config['d_model'],
-                n_heads=config['n_heads'],
-                n_layers=config['n_layers'],
-                d_ff=config['d_ff'],
-                max_seq_len=config['max_seq_len'],
-            )
-            self.model.load(model_path)
-            self.model.eval_mode()
-            self.loaded = True
-            print("Model loaded successfully!")
+        """Load the GGUF chat model (the engine runs it in numpy)."""
+        path = self.model_path
+        if not path:
+            candidates = self.find_gguf_models()
+            path = candidates[0] if candidates else None
+        if path and os.path.isfile(path):
+            try:
+                print(f"Loading GGUF model: {os.path.basename(path)}")
+                self.model = LlamaEngine(path)
+                self.model_path = path
+                self.loaded = True
+                print("Model loaded successfully!")
+            except Exception as e:
+                print(f"Failed to load GGUF model: {e}")
+                self.loaded = False
         else:
-            print("No trained model found. Using knowledge base only.")
-            print("Run 'python train.py' first to train the neural network.")
+            print("No GGUF model found. Using knowledge base, dictionary and search.")
+            print("Download one from the version database (or run "
+                  "'python train_big.py' + 'python export_gguf.py').")
             self.loaded = False
 
-    def _find_relevant_knowledge(self, query: str) -> str:
-        """Find relevant knowledge from the knowledge base."""
-        query_lower = query.lower().strip()
-
-        # Greeting detection
-        greetings = ['hello', 'hi', 'hey', 'greetings', 'howdy', 'good morning',
-                     'good afternoon', 'good evening', 'what\'s up', 'sup']
-        if any(g in query_lower for g in greetings):
-            return np.random.choice(self.knowledge_base['greetings'])
-
-        # Identity questions
-        identity_keywords = ['who are you', 'what are you', 'your name', 'about yourself',
-                           'tell me about you', 'introduce yourself']
-        if any(k in query_lower for k in identity_keywords):
-            return np.random.choice(self.knowledge_base['identity'])
-
-        # Capability questions
-        cap_keywords = ['what can you do', 'your capabilities', 'help me', 'what do you know',
-                       'can you help', 'abilities']
-        if any(k in query_lower for k in cap_keywords):
-            return np.random.choice(self.knowledge_base['capabilities'])
-
-        # Science
-        physics_kw = ['physics', 'gravity', 'force', 'energy', 'light', 'speed',
-                      'relativity', 'quantum', 'electron', 'atom', 'nuclear']
-        biology_kw = ['biology', 'dna', 'cell', 'evolution', 'species', 'gene',
-                      'organism', 'photosynthesis', 'plant', 'animal', 'brain']
-        chemistry_kw = ['chemistry', 'element', 'molecule', 'chemical', 'reaction',
-                       'periodic table', 'compound', 'acid', 'base']
-        math_kw = ['math', 'equation', 'number', 'calculate', 'algebra', 'geometry',
-                  'calculus', 'theorem', 'prime', 'pi', 'statistics']
-        tech_kw = ['computer', 'programming', 'software', 'internet', 'ai',
-                  'artificial intelligence', 'machine learning', 'neural network',
-                  'algorithm', 'data', 'code', 'technology']
-
-        if any(k in query_lower for k in physics_kw):
-            return np.random.choice(self.knowledge_base['science']['physics'])
-        if any(k in query_lower for k in biology_kw):
-            return np.random.choice(self.knowledge_base['science']['biology'])
-        if any(k in query_lower for k in chemistry_kw):
-            return np.random.choice(self.knowledge_base['science']['chemistry'])
-        if any(k in query_lower for k in math_kw):
-            return np.random.choice(self.knowledge_base['math'])
-        if any(k in query_lower for k in tech_kw):
-            return np.random.choice(self.knowledge_base['technology'])
-
-        # Search training corpus for relevant content
-        corpus = TrainingData.get_training_corpus()
-        query_words = set(query_lower.split())
-        best_match = ""
-        best_score = 0
-
-        for text in corpus:
-            text_lower = text.lower()
-            text_words = set(text_lower.split())
-            # Calculate word overlap
-            overlap = len(query_words.intersection(text_words))
-            # Bonus for exact substring match
-            for word in query_words:
-                if len(word) > 3 and word in text_lower:
-                    overlap += 2
-
-            if overlap > best_score:
-                best_score = overlap
-                best_match = text
-
-        if best_score >= 2 and best_match:
-            return best_match
-
-        return np.random.choice(self.knowledge_base['fallback'])
-
-    def _generate_with_model(self, prompt: str, max_tokens: int = 80) -> str:
-        """Generate text using the neural network model."""
-        if not self.loaded or self.model is None:
-            return ""
-
-        try:
-            tokens = self.tokenizer.encode(prompt, add_special_tokens=False)
-            if len(tokens) == 0:
-                return ""
-
-            input_ids = np.array(tokens).reshape(1, -1)
-            output_ids = self.model.generate(
-                input_ids,
-                max_new_tokens=max_tokens,
-                temperature=0.7,
-                top_k=40,
-                top_p=0.9
-            )
-            generated_text = self.tokenizer.decode(output_ids.tolist())
-
-            # Clean up
-            generated_text = generated_text.strip()
-            # Remove the prompt from the beginning if repeated
-            if generated_text.lower().startswith(prompt.lower()):
-                generated_text = generated_text[len(prompt):].strip()
-
-            return generated_text
-        except Exception as e:
-            return ""
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
 
     def think(self, user_input: str) -> str:
         """
         Process user input and generate a response.
-        Combines knowledge retrieval with neural generation.
+
+        The input is fully parsed (clauses, negation, coreference, spelling),
+        each clause is answered by the best available source (small talk,
+        dictionary, knowledge base, web search, neural model), and the
+        per-clause answers are combined into one response.
         """
-        # Store in conversation history
         self.conversation_history.append({
             'role': 'user',
             'content': user_input
         })
 
-        # Get knowledge-based response
-        kb_response = self._find_relevant_knowledge(user_input)
+        # 1. Understand
+        analysis = self.analyzer.analyze(user_input, last_topic=self.last_topic)
 
-        # Try neural generation
-        neural_response = ""
-        if self.loaded:
-            # Create a prompt combining context and user input
-            context = ""
-            if len(self.conversation_history) > 1:
-                recent = self.conversation_history[-3:]
-                for msg in recent[:-1]:
-                    if msg['role'] == 'user':
-                        context += f"User: {msg['content']} "
-                    else:
-                        context += f"AI: {msg['content']} "
+        # 2. Track the conversation topic for coreference in later turns
+        self._update_topic(analysis)
 
-            prompt = f"{context}User: {user_input} AI:"
-            neural_response = self._generate_with_model(prompt, max_tokens=60)
+        # 3. Answer each clause
+        clause_answers: List[str] = []
+        self._turn_answered = False
+        for clause in analysis.clauses[:4]:
+            answer = self._answer_clause(clause, analysis)
+            if answer:
+                clause_answers.append(answer)
 
-        # Combine responses intelligently
-        if neural_response and len(neural_response) > 20:
-            # If neural response is coherent, blend with KB response
-            response = self._blend_responses(kb_response, neural_response, user_input)
-        else:
-            response = kb_response
+        if not clause_answers:
+            clause_answers = [self._fallback_answer(analysis)]
 
-        # Post-process
+        response = self._join_answers(clause_answers)
+
+        # 4. Blend in neural generation, but only to fill in fallback turns -
+        #    never on top of a clean answer (social reply, definition,
+        #    search result, learned term, ...)
+        if self.loaded and clause_answers and not self._turn_answered:
+            response = self._maybe_blend_neural(response, analysis)
+
         response = self._post_process(response)
 
-        # Store response
         self.conversation_history.append({
             'role': 'assistant',
             'content': response
         })
-
         return response
+
+    # ------------------------------------------------------------------
+    # Clause routing
+    # ------------------------------------------------------------------
+
+    # "tell me a story", "write a story about a dog", "make up a tale"
+    _STORY_RE = re.compile(
+        r'^\s*(please\s+)?((can|could|will|would)\s+you\s+)?(please\s+)?'
+        r'(tell|write|make up|give me|read)\b[^.?!]*\b'
+        r'(story|stories|tale|fairy ?tale|bedtime)\b', re.I)
+
+    def _answer_clause(self, clause: Clause, analysis: Analysis) -> str:
+        """Produce the best answer for a single clause."""
+        text = clause.text
+
+        # -- Story requests: this is what the neural model is best at ----
+        if self.loaded and self._STORY_RE.search(text):
+            story = self._generate_with_model(text, max_tokens=180)
+            readable, _why = looks_like_english(story, self.dictionary)
+            if readable and len(story) > 60:
+                self._turn_answered = True
+                return story
+
+        # -- Small talk & identity --------------------------------------
+        small = self._match_small_talk(clause)
+        if small:
+            self._turn_answered = True
+            return small
+
+        # -- Optional extensions (calculator, dice, ...) ------------------
+        if self.extensions is not None:
+            answer = self.extensions.try_handle(text, self)
+            if answer:
+                self._turn_answered = True
+                return answer
+
+        # -- Explicit search requests ------------------------------------
+        if clause.question_type == 'search' and clause.search_query:
+            answer = self._answer_search(clause.search_query)
+            if answer:
+                self._turn_answered = True
+                return answer
+            self._turn_answered = True
+            return self._honest_unknown(clause)
+
+        # -- Dictionary intents ------------------------------------------
+        if clause.question_type == 'definition':
+            answer = self._answer_definition(clause, analysis)
+            if answer:
+                self._turn_answered = True
+                return answer
+
+        if clause.question_type == 'spell':
+            self._turn_answered = True
+            return self._answer_spell(clause)
+
+        if clause.question_type == 'isword':
+            self._turn_answered = True
+            return self._answer_isword(clause)
+
+        if clause.question_type == 'synonyms':
+            self._turn_answered = True
+            return self._answer_synonyms(clause)
+
+        # -- Yes/no questions --------------------------------------------
+        if clause.question_type == 'yesno':
+            answer = self._answer_yesno(clause)
+            if answer:
+                self._turn_answered = True
+                return answer
+
+        # -- Knowledge retrieval -----------------------------------------
+        doc_id, score, coverage, knowledge, confident = self._retrieve_knowledge(clause)
+        if knowledge and confident:
+            self._turn_answered = True
+            return knowledge
+
+        # -- Bare topic mention ("minecraft", "quantum computing") ---------
+        # A short clause that only names something is treated as "tell me
+        # about it", so unknown words still get looked up and learned.
+        if not clause.question_type:
+            answer = self._answer_bare_topic(clause)
+            if answer:
+                self._turn_answered = True
+                return answer
+
+        # -- Web search fallback (only for question-like clauses) ----------
+        question_like = (clause.is_question or clause.question_type
+                         or clause.entities)
+        if self.search.enabled and question_like:
+            answer = self._answer_search(clause.text)
+            if answer:
+                self._turn_answered = True
+                return answer
+
+        # -- Weak local knowledge, but only when it genuinely covers the
+        #    question (weighted coverage >= 0.5) - otherwise an honest
+        #    "I don't know" beats a coincidental keyword match. --------------
+        usable_weak = knowledge and score >= KNOWLEDGE_WEAK_THRESHOLD and \
+            coverage >= 0.5
+        if usable_weak:
+            self._turn_answered = True
+            return knowledge
+        if clause.question_type:
+            self._turn_answered = True
+            return self._honest_unknown(clause)
+
+        # -- A statement that mentions a word we don't know at all: look it
+        #    up online, learn it and answer with what was learned ----------
+        answer = self._respond_to_statement(clause)
+        if answer:
+            self._turn_answered = True
+            return answer
+
+        return self._fallback_answer(analysis, clause)
+
+    def _match_small_talk(self, clause: Clause) -> str:
+        """Detect greetings, identity, thanks, farewells, apologies and other
+        conversational cues, so social messages get natural replies."""
+        lemmas = set(clause.focus)
+        text = clause.text.lower().strip(' ?!.')
+        tokens = {t.lower().strip('.,!?"').replace("'", '')
+                  for t in tokenize(clause.text)}
+        tokens.discard('')
+
+        # Words that don't count as content when deciding whether a clause
+        # is "just" a social cue.
+        fillers = {'you', 'your', 'me', 'i', 'we', 'am', 'are', 'is', 'was',
+                   'were', 'the', 'a', 'an', 'to', 'so', 'very', 'much',
+                   'today', 'there', 'here', 'doing', 'do', 'does', 'did',
+                   'that', 'this', 'it', 'for', 'about', 'now', 'then',
+                   'and', 'but', 'with', 'of', 'at', 'on', 'in', 'my', 'our',
+                   'really', 'just', 'also', 'too', 'be', 'been', 'have',
+                   'has', 'had', 'will', 'would', 'can', 'could', 'all',
+                   'one', 'well', 'up', 'out'}
+
+        def only(words) -> bool:
+            """True if the clause consists (almost) only of these words."""
+            return not (tokens - words - fillers)
+
+        def pick(key) -> str:
+            return str(np.random.choice(self.knowledge_base[key]))
+
+        # Time-of-day greetings. "good morning" is a hello, not a request
+        # for the dictionary entry of the phrase - and "good night" is a
+        # goodbye, not a hello.
+        tod = re.fullmatch(r"(?:a )?(?:very )?good[- ](morning|afternoon|evening|night)"
+                           r"(?:,? (?:lito|to you|everyone|all))?", text)
+        if tod:
+            part = tod.group(1)
+            return pick('goodnight' if part == 'night' else part)
+        if re.fullmatch(r"(?:good)?night(?: night)?", text):
+            return pick('goodnight')
+
+        greeting_words = {'hi', 'hello', 'hey', 'howdy', 'yo', 'greetings',
+                          'morning', 'afternoon', 'evening', 'sup', 'whats', 'up'}
+        if only(greeting_words) and (tokens & greeting_words):
+            if tokens & {'morning', 'afternoon', 'evening'}:
+                for part in ('morning', 'afternoon', 'evening'):
+                    if part in tokens:
+                        return pick(part)
+            return pick('greetings')
+
+        if re.search(r"how (are|is) (you|it going|things|your day)", text):
+            return pick('howareyou')
+
+        # "no thanks" is a polite refusal, not gratitude
+        if text in ('no thanks', 'no thank you'):
+            return pick('negation')
+
+        if lemmas & {'thank', 'thanks', 'thx', 'thankx'} or text in ('thanks', 'thank you'):
+            return pick('thanks')
+
+        if only({'bye', 'goodbye', 'later', 'farewell', 'see', 'soon', 'cya', 'peace'}) \
+                and (tokens & {'bye', 'goodbye', 'later', 'farewell', 'cya'}):
+            return pick('bye')
+
+        # -- Conversational cues. Only when the clause carries no other
+        #    intent, so "what does sorry mean" still gets a definition. -----
+        if not clause.question_type:
+            # Apologies: "sorry", "my bad", "i'm so sorry about that"
+            apology_words = {'sorry', 'apologize', 'apology', 'apologies',
+                             'oops', 'bad', 'excuse', 'pardon', 'forgive'}
+            if ((tokens & {'sorry', 'oops'})
+                    or re.search(r"\bmy bad\b|\bexcuse me\b|\bpardon me\b", text)) \
+                    and only(apology_words):
+                return pick('apology')
+
+            # "i don't know" / "not sure" / "no idea"
+            if re.fullmatch(r"(?:i (?:do|did)(?:n'?t| not)? know(?: nothing)?|idk|"
+                            r"dunno|no idea|i have no idea|i'?m not sure|not sure)[.!, ]*", text):
+                return pick('idk')
+
+            # Acknowledgements & affirmations: "ok", "cool", "got it", "yes", "lol"
+            ack_words = {'ok', 'okay', 'k', 'cool', 'nice', 'great', 'awesome',
+                         'wow', 'amazing', 'alright', 'right', 'got', 'good',
+                         'makes', 'sense', 'see', 'fine', 'true', 'yeah',
+                         'yep', 'yes', 'sure', 'definitely', 'absolutely',
+                         'correct', 'exactly', 'lol', 'haha', 'hahaha', 'lmao',
+                         'funny', 'heh', 'hehe', 'hmm', 'interesting', 'fair',
+                         'sounds', 'totally', 'agreed'}
+            if (tokens & ack_words) and only(ack_words):
+                return pick('acknowledgment')
+
+            # Bare negations: "no", "nope", "nah", "not really"
+            if (tokens & {'no', 'nope', 'nah'}) \
+                    and only({'no', 'nope', 'nah', 'never', 'not', 'nothing',
+                              'none', 'really', 'yet', 'thanks', 'thank'}):
+                return pick('negation')
+
+            # Praise: "good job", "well done", "you're smart", "that was funny"
+            praise_patterns = [
+                r"\b(?:good|great|nice|awesome|excellent|amazing) (?:job|work|bot|ai)\b",
+                r"\bwell done\b",
+                r"\bi (?:like|love) (?:you|this|it|talking to you)\b",
+                r"you'?re (?:so |very |really )?(?:smart|clever|awesome|amazing|funny|cool|great|helpful|good)",
+                r"\bthat (?:was|is) (?:funny|hilarious|great|awesome|amazing)\b",
+                r"\bimpressive\b",
+            ]
+            if any(re.search(p, text) for p in praise_patterns):
+                return pick('praise')
+
+            # Criticism: "you are bad at this", "you suck", "you're wrong"
+            criticism_patterns = [
+                r"you(?:'re| are| r) (?:so |very |really |pretty |just )?"
+                r"(?:bad|terrible|awful|horrible|stupid|dumb|useless|trash|garbage|weak)",
+                r"\b(?:bad|worst|terrible|useless|stupid) (?:bot|ai)\b",
+                r"you suck",
+                r"you(?:'re| are) wrong\b",
+                r"you (?:don'?t|do not) know (?:anything|anything at all|nothing|what)",
+            ]
+            if any(re.search(p, text) for p in criticism_patterns):
+                return pick('criticism')
+
+            # Bare calls for help
+            if text in ('help', 'help me', 'i need help', 'help please',
+                        'please help', 'help me please', 'can you help me'):
+                return pick('help')
+
+        # "what are your params" / "how many parameters do you have"
+        if re.search(r"how many (?:params|parameters)|\byour (?:params|parameters)\b", text):
+            return self._answer_params()
+
+        identity_patterns = [
+            r'who are you', r'what are you\b', r'your name', r'about yourself',
+            r'introduce yourself', r'tell me about you\b', r'who made you',
+            r'who created you', r'who built you',
+        ]
+        if any(re.search(p, text) for p in identity_patterns):
+            return str(np.random.choice(self.knowledge_base['identity']))
+
+        capability_patterns = [
+            r'what can you do', r'your capabilities', r'what do you know',
+            r'can you help', r'what are your (abilities|skills|features)',
+            r'how can you help', r'what are you capable of',
+        ]
+        if any(re.search(p, text) for p in capability_patterns):
+            return str(np.random.choice(self.knowledge_base['capabilities']))
+
+        return ''
+
+    def _answer_params(self) -> str:
+        """Answer questions about the AI's own parameters."""
+        if self.loaded and self.model is not None:
+            count = getattr(self.model, '_param_count', 0)
+            return (f"My neural network is a llama-architecture transformer "
+                    f"with {count:,} parameters, built and trained entirely "
+                    f"from scratch - no pretrained weights. It runs from a "
+                    f"single GGUF file, the same one that works in llama.cpp, "
+                    f"LM Studio or Ollama.")
+        return ("I don't have the GGUF model loaded right now, so I can't "
+                "count its parameters - download one from the version "
+                "database, or train one with 'python train_big.py' and "
+                "'python export_gguf.py'.")
+
+    # ------------------------------------------------------------------
+    # Dictionary answers
+    # ------------------------------------------------------------------
+
+    def _answer_definition(self, clause: Clause,
+                           analysis: Optional[Analysis] = None) -> str:
+        """Answer 'what does X mean' style questions from the dictionary."""
+        target = (clause.definition_target or '').strip()
+        if not target:
+            # Fall back to the most salient content word
+            nouns = [w for w in clause.focus if 'n' in self.dictionary.pos_of(w) or w not in clause.focus]
+            target = nouns[0] if nouns else (clause.focus[0] if clause.focus else '')
+        if not target:
+            return ''
+
+        entry = self.dictionary.lookup(target, use_online=None)
+        if entry.found and entry.definitions:
+            lines = []
+            senses = entry.definitions[:3]
+            for i, d in enumerate(senses, 1):
+                line = f"{d.text}"
+                if d.example and i == 1:
+                    line += f' For example: "{d.example}"'
+                if d.synonyms and i == 1:
+                    line += f" [synonyms: {', '.join(d.synonyms[:4])}]"
+                if not line.endswith(('.', '!', '?', '"')):
+                    line += '.'
+                lines.append(line)
+            pos = entry.parts_of_speech[0] if entry.parts_of_speech else 'word'
+            word = entry.word[0].upper() + entry.word[1:] if entry.word else entry.word
+            if lines and lines[0].lower().startswith(entry.word.lower()):
+                # The definition already starts with the word itself
+                # (typical for learned summaries) - don't repeat it.
+                result = ' '.join(lines)
+            else:
+                result = f"{word} ({pos}): " + ' '.join(lines)
+            if entry.freshly_learned:
+                result += (f" (That was new to me, so I looked it up online and added it "
+                           f"to my dictionary - knowledge is now at "
+                           f"{format_version(self.dictionary.knowledge_version)}.)")
+            return result
+
+        if entry.suggestions and not self.search.enabled:
+            return (f"I couldn't find '{target}' in my dictionary. "
+                    f"Did you mean: {', '.join(entry.suggestions)}?")
+
+        # Not a dictionary entry - maybe a concept or phrase the local
+        # knowledge base literally discusses.
+        phrase_match = self._find_phrase_match(target)
+        if phrase_match:
+            return phrase_match
+
+        # New word/term for the AI: look it up online and learn it. (The
+        # title-match guard below rejects results for probable typos.)
+        if self.search.enabled:
+            learned = self._learn_from_web(target)
+            if learned:
+                return learned
+            if self.search.last_status == 'offline':
+                return self._honest_unknown(clause)
+
+        # Maybe it was a typo of a known word after all
+        if entry.suggestions:
+            return (f"I couldn't find '{target}' in my dictionary. "
+                    f"Did you mean: {', '.join(entry.suggestions)}?")
+        if ' ' in target:
+            return self._honest_unknown(clause)
+        return ''
+
+    def _learn_from_web(self, target: str) -> str:
+        """
+        Look up an unknown word or term online (Wikipedia / DuckDuckGo) and
+        add it to the learned dictionary, so it is known offline from now on.
+        Returns a response for the user, or '' when nothing was found.
+        """
+        learned = self._try_learn_from_web(target)
+        if learned is None:
+            return ''
+        summary, url = learned
+        # Don't say "Minecraft: Minecraft is ..." when the summary already
+        # starts with the term.
+        if summary.lower().startswith(target.lower()):
+            body = summary
+        else:
+            display = target[0].upper() + target[1:] if target else target
+            body = f"{display}: {summary}"
+        source_url = f" Source: {url}." if url else ''
+        return (f"{body}{source_url} That was new to me, so I looked it up and "
+                f"added it to my dictionary - knowledge is now at "
+                f"{format_version(self.dictionary.knowledge_version)}.")
+
+    def _try_learn_from_web(self, target: str) -> Optional[Tuple[str, str]]:
+        """Search for `target` and learn it when the result is really about it.
+        Returns (summary, url), or None when nothing usable was found."""
+        result = self.search.quick_answer(target)
+        if result is None:
+            return None
+        if not self._title_matches(target, result.title):
+            # The best result is about something else - the target is
+            # probably a misspelling, not a real unknown term.
+            return None
+        summary = ' '.join(result.display.split())
+        if len(summary) < 20:
+            return None
+        if not self.dictionary.learn_from_summary(target, summary,
+                                                  source=result.source,
+                                                  url=result.url):
+            return None
+        if not summary.endswith(('.', '!', '?')):
+            summary += '.'
+        return summary, result.url
+
+    @staticmethod
+    def _title_matches(target: str, title: str) -> bool:
+        """True when a search result title is really about the target."""
+        target_words = {w for w in re.findall(r'\w+', target.lower())
+                        if w not in ('the', 'a', 'an', 'of', 'is', 'what')}
+        title_words = set(re.findall(r'\w+', (title or '').lower()))
+        if not target_words:
+            return False
+        return bool(target_words & title_words)
+
+    def _find_phrase_match(self, phrase: str) -> str:
+        """Find a knowledge document that literally discusses `phrase`."""
+        needle = ' '.join(phrase.lower().split())
+        if len(needle) < 3:
+            return ''
+        corpus = TrainingData.get_training_corpus()
+        for text in corpus:
+            if needle in text.lower():
+                return self._clean_corpus_answer(text)
+        for _doc_id, text in self._iter_kb_documents():
+            if needle in text.lower():
+                return text
+        return ''
+
+    # Tokens that make a clause a personal statement ("i like pizza") rather
+    # than a bare topic mention ("pizza").
+    _STATEMENT_MARKERS = frozenset(
+        'i you we they he she it me him her us them my your our their his its '
+        'mine yours im ive ill id youre youve youll hes shes theyre were was '
+        'am is are be been being like likes love loves hate hates think thinks '
+        'know knows want wants need needs feel feels say says said tell told '
+        'ask asked get got gets make makes made have has had do does did done '
+        'can could would should will wont just really too also not no never '
+        'because when while since about'.split())
+
+    # Words never treated as unknown terms to learn online: chat slang and
+    # apostrophe-less contractions.
+    _NO_LEARN_WORDS = frozenset(
+        'dont doesnt didnt wont wouldnt cant couldnt shouldnt isnt arent wasnt '
+        'werent hasnt havent hadnt aint im ive ill id youre youve youll theyre '
+        'thats whats lets pls plz tho thru u ur r bc cuz imo tbh idk smh ngl '
+        'fyi brb lol lmao rofl omg wtf btw haha hahaha heh hehe hmm'.split())
+
+    def _answer_bare_topic(self, clause: Clause) -> str:
+        """
+        A short clause that only names something ("minecraft", "quantum
+        computing", "pizza") is answered as if the user had said "tell me
+        about it": dictionary definition, local knowledge, or a web lookup
+        the AI learns from.
+        """
+        tokens = [t.lower().strip('.,!?"').replace("'", '')
+                  for t in tokenize(clause.text)]
+        tokens = [t for t in tokens if t]
+        if not tokens or len(tokens) > 4:
+            return ''
+        if any(t in self._STATEMENT_MARKERS for t in tokens):
+            return ''
+        if not clause.focus:
+            return ''
+        clause.definition_target = ' '.join(clause.focus[:3])
+        return self._answer_definition(clause)
+
+    def _respond_to_statement(self, clause: Clause) -> str:
+        """
+        Respond to a statement that mentions something special:
+        - a term the AI has already learned -> connect back to that knowledge
+        - a word the AI doesn't know at all ("i have been playing minecraft")
+          -> look it up online, learn it and answer with what was learned,
+          so the word is understood from now on.
+        """
+        # A learned term is mentioned: use that knowledge in the reply
+        text_words = {t.lower() for t in tokenize(clause.text)}
+        for term in self.dictionary.learned_words:
+            term_words = set(term.lower().split())
+            if term_words and term_words <= text_words:
+                entry = self.dictionary.lookup(term, use_online=False)
+                if entry.found and entry.definitions:
+                    first = split_sentences(entry.definitions[0].text)
+                    first = first[0] if first else ''
+                    if first and not first.endswith(('.', '!', '?')):
+                        first += '.'
+                    display = term[0].upper() + term[1:]
+                    return (f"{display} - I remember that one! {first} "
+                            f"Anything you'd like to know about it?")
+
+        # A word the AI doesn't know at all: learn it online
+        if not self.search.enabled:
+            return ''
+        unknown = [w for w in clause.focus
+                   if len(w) > 2 and w not in self._NO_LEARN_WORDS
+                   and not self.dictionary.is_word(w)]
+        if not unknown:
+            return ''
+        word = unknown[0]
+        learned = self._try_learn_from_web(word)
+        if learned is None:
+            return ''
+        summary, url = learned
+        source = f" Source: {url}." if url else ''
+        return (f"'{word}' was new to me, so I looked it up and added it to "
+                f"my dictionary - knowledge is now at "
+                f"{format_version(self.dictionary.knowledge_version)}. "
+                f"{summary}{source}")
+
+    def _answer_spell(self, clause: Clause) -> str:
+        """Answer 'how do you spell X' questions."""
+        target = (clause.quote or '').strip()
+        if not target:
+            m = re.search(r'spell(?:ing of| out)?\s+(.+?)\s*\??\s*$', clause.text, re.I)
+            if m:
+                target = m.group(1).strip(' ?."\'')
+        if not target:
+            return "Which word would you like me to spell?"
+
+        words = target.split()
+        if len(words) == 1:
+            word = words[0].lower().strip('.,!?')
+            if self.dictionary.is_word(word):
+                spelled = '-'.join(word)
+                return f"'{word}' is spelled: {spelled} ({len(word)} letters)."
+            suggestions = self.dictionary.suggest(word)
+            if suggestions:
+                return (f"'{word}' is not in the English dictionary. "
+                        f"Did you mean: {', '.join(suggestions)}?")
+            return f"I can't find '{word}' in my dictionary."
+        # Multi-word phrase
+        checked = []
+        for word in words:
+            w = word.lower().strip('.,!?')
+            checked.append(w if self.dictionary.is_word(w) else f'{w}(?)')
+        return 'That spells out as: ' + ' '.join(checked) + '.'
+
+    def _answer_isword(self, clause: Clause) -> str:
+        """Answer 'is X a real word' questions."""
+        target = (clause.definition_target or clause.quote or '').strip()
+        if not target:
+            for pattern in IS_WORD_PATTERNS:
+                m = pattern.search(clause.text)
+                if m and m.group(1):
+                    target = m.group(1).strip(' ?."\'')
+                    break
+        if not target:
+            return ''
+        word = target.lower().strip('.,!?"\'')
+        if ' ' in word:
+            parts_ok = [self.dictionary.is_word(p) for p in word.split()]
+            if all(parts_ok):
+                return f"'{target}' is a phrase, and every word in it is in the English dictionary."
+            return f"'{target}' contains a word I don't recognize."
+        if self.dictionary.is_word(word):
+            entry = self.dictionary.lookup(word, use_online=False)
+            extra = f" ({entry.parts_of_speech[0]})" if entry.parts_of_speech else ''
+            return f"Yes, '{word}' is a valid English word{extra}."
+        suggestions = self.dictionary.suggest(word)
+        if suggestions:
+            return (f"'{word}' is not in the English dictionary. "
+                    f"Closest words: {', '.join(suggestions)}.")
+        return f"No, '{word}' is not in the English dictionary."
+
+    def _answer_synonyms(self, clause: Clause) -> str:
+        """Answer 'another word for X' style questions."""
+        target = (clause.definition_target or clause.quote or '').strip()
+        if not target:
+            m = re.search(r'(?:for|of|as)\s+(.+?)\s*\??\s*$', clause.text, re.I)
+            if m:
+                target = m.group(1).strip(' ?."\'')
+        if not target:
+            return "Which word do you want synonyms for?"
+
+        synonyms = self.dictionary.synonyms(target)
+        if synonyms:
+            seen = []
+            for s in synonyms:
+                if s not in seen:
+                    seen.append(s)
+            return f"Synonyms for '{target}': {', '.join(seen[:10])}."
+        entry = self.dictionary.lookup(target, use_online=False)
+        if entry.found:
+            return f"I know '{target}', but I don't have synonyms recorded for it."
+        return f"I couldn't find '{target}' in my dictionary."
+
+    # ------------------------------------------------------------------
+    # Yes/no questions
+    # ------------------------------------------------------------------
+
+    def _answer_yesno(self, clause: Clause) -> str:
+        """Answer yes/no questions using knowledge, search or the dictionary."""
+        doc_id, score, coverage, knowledge, confident = self._retrieve_knowledge(clause)
+        if knowledge and confident:
+            return knowledge
+        if self.search.enabled:
+            answer = self._answer_search(clause.text)
+            if answer:
+                return answer
+        if knowledge and score >= KNOWLEDGE_WEAK_THRESHOLD:
+            return knowledge
+        return ''
+
+    # ------------------------------------------------------------------
+    # Web search
+    # ------------------------------------------------------------------
+
+    def _answer_search(self, query: str) -> str:
+        """Search the web and format the best result as an answer."""
+        query = (query or '').strip()
+        if not query:
+            return ''
+        result = self.search.quick_answer(query)
+        if result is not None:
+            return self._format_search_result(result)
+        if self.search.last_status == 'offline':
+            return ("I couldn't reach the web right now, so here's my best local "
+                    "answer. " + self._fallback_answer(None, None))
+        # 'no_results' or unknown: fall through to local knowledge
+        return ''
+
+    def _honest_unknown(self, clause: Clause) -> str:
+        """Honest answer when nothing local matches a factual question."""
+        if self.search.last_status == 'no_results':
+            return ("I searched for that but couldn't find a good answer. "
+                    "Could you rephrase it or give me a bit more context?")
+        if not self.search.enabled:
+            return ("I don't have that in my local knowledge and web search is "
+                    "currently disabled. Enable it with '/search on' and I'll "
+                    "look it up online.")
+        return ("I don't have reliable local knowledge about that, and I "
+                "couldn't reach the web just now - please try again in a "
+                "moment.")
+
+    def _format_search_result(self, result: SearchResult, max_sentences: int = 3) -> str:
+        text = result.display.strip()
+        sentences = split_sentences(text)
+        if len(sentences) > max_sentences:
+            text = ' '.join(sentences[:max_sentences])
+        if len(text) > 480:
+            cut = text[:480]
+            last_space = cut.rfind(' ')
+            text = cut[:last_space if last_space > 300 else 480] + '...'
+        source = result.source.capitalize()
+        return f"🌐 {source} — {result.title} ({result.url}): {text}"
+
+    # ------------------------------------------------------------------
+    # Knowledge retrieval
+    # ------------------------------------------------------------------
+
+    def _retrieve_knowledge(self, clause: Optional[Clause]):
+        """
+        Rank the knowledge base + corpus with BM25 for a clause.
+        Returns (doc_id, score, coverage, text, confident). A match only
+        counts as confident when the BM25 score is high AND a good fraction
+        of the query terms actually matched, which avoids answering "who won
+        the 2022 world cup" with a document that merely contains "world".
+        """
+        if clause is None:
+            return '', 0.0, 0.0, '', False
+        terms = clause.focus + [e.lower() for e in clause.entities]
+        return self._retrieve_for_terms(terms)
+
+    def _retrieve_for_terms(self, terms: List[str]):
+        """BM25 retrieval for an explicit list of query terms."""
+        index = self._ensure_index()
+        terms = [t for t in terms if t]
+        if not terms:
+            return '', 0.0, 0.0, '', False
+        query = ' '.join(terms)
+        # Rare, topical words (photosynthesis) matter more than common ones
+        # (work, get), so weight the query accordingly.
+        weights = {term: self._term_weight(term) for term in set(terms)}
+        results = index.search(query, n=3, term_weights=weights)
+        if not results:
+            return '', 0.0, 0.0, '', False
+        doc_id, score, coverage = results[0]
+        self._last_knowledge = [(d, s) for d, s, _ in results]
+
+        confident = (score >= KNOWLEDGE_CONFIDENCE_THRESHOLD and coverage >= 0.5) \
+            or score >= KNOWLEDGE_STRONG_SCORE
+
+        text = self._doc_text(doc_id)
+        if doc_id.startswith('corpus:'):
+            # Corpus Q&A entries have "Question: ... Answer: ..." or
+            # "User: ... AI: ..." wrappers; answer with the response part.
+            text = self._clean_corpus_answer(text)
+            # Augmentation creates single-sentence docs; answer with the
+            # richer original text when we can find it.
+            text = self._clean_corpus_answer(self._expand_corpus_text(text))
+        return doc_id, score, coverage, text, confident
+
+    def _clean_corpus_answer(self, text: str) -> str:
+        """Strip Q&A / chat wrappers from a corpus text."""
+        if 'Answer:' in text:
+            text = text.split('Answer:', 1)[1].strip()
+        elif 'AI:' in text:
+            idx = text.find('AI:')
+            if idx >= 0:
+                text = text[idx + 3:].strip()
+        return text.strip()
+
+    def _expand_corpus_text(self, text: str) -> str:
+        """If `text` is a sentence from a longer corpus entry, return that entry."""
+        if len(text) >= 200:
+            return text
+        corpus = TrainingData.get_training_corpus()
+        for candidate in corpus:
+            if text != candidate and len(candidate) > len(text) and text in candidate:
+                return candidate
+        return text
+
+    def _term_weight(self, word: str) -> float:
+        """Weight a query term by how informative it is in general English."""
+        freq = self.dictionary.frequency(word)
+        if freq <= 0:
+            return 2.0      # not in the frequency list: likely a rare/proper term
+        if freq > 5_000_000:
+            return 0.7      # very common word
+        if freq > 500_000:
+            return 1.0
+        if freq > 50_000:
+            return 1.5
+        return 2.5          # rare word - highly topical
+
+    def _doc_text(self, doc_id: str) -> str:
+        """Fetch the stored text for a knowledge index document."""
+        if doc_id.startswith('kb:'):
+            parts = doc_id.split(':')
+            value = self.knowledge_base
+            try:
+                for key in parts[1:-1]:
+                    value = value[key]
+                return value[int(parts[-1])]
+            except (KeyError, IndexError, ValueError, TypeError):
+                return ''
+        elif doc_id.startswith('corpus:'):
+            corpus = TrainingData.get_training_corpus()
+            try:
+                return corpus[int(doc_id.split(':')[1])]
+            except (IndexError, ValueError):
+                return ''
+        return ''
+
+    def _find_relevant_knowledge(self, query: str) -> str:
+        """
+        Find relevant knowledge for a raw query string (compatibility API).
+        """
+        clause = self.analyzer._analyze_clause(query)
+        if clause is None:
+            return str(np.random.choice(self.knowledge_base['fallback']))
+        _doc, score, _cov, text, _confident = self._retrieve_knowledge(clause)
+        if text and score >= KNOWLEDGE_WEAK_THRESHOLD:
+            return text
+        return str(np.random.choice(self.knowledge_base['fallback']))
+
+    # ------------------------------------------------------------------
+    # Topic tracking / coreference
+    # ------------------------------------------------------------------
+
+    def _update_topic(self, analysis: Analysis) -> None:
+        """Remember the subject of the conversation for coreference."""
+        # Prefer definition targets and proper-noun entities
+        for clause in analysis.clauses:
+            if clause.definition_target:
+                self.last_topic = clause.definition_target.lower()
+                return
+        for clause in analysis.clauses:
+            if clause.entities and clause.question_type:
+                self.last_topic = ' '.join(e.lower() for e in clause.entities[:3])
+                return
+        # Otherwise use the most informative content words of the last clause
+        for clause in reversed(analysis.clauses):
+            if clause.focus:
+                self.last_topic = ' '.join(clause.focus[:2])
+                return
+
+    # ------------------------------------------------------------------
+    # Response assembly
+    # ------------------------------------------------------------------
+
+    def _join_answers(self, answers: List[str]) -> str:
+        """Combine per-clause answers into one coherent reply."""
+        answers = [a.strip() for a in answers if a and a.strip()]
+        if not answers:
+            return str(np.random.choice(self.knowledge_base['fallback']))
+        if len(answers) == 1:
+            return answers[0]
+        if len(answers) == 2:
+            return answers[0] + ' ' + answers[1]
+        return ' '.join(answers)
+
+    def _fallback_answer(self, analysis: Optional[Analysis],
+                         clause: Optional[Clause] = None) -> str:
+        if clause is not None and clause.negated:
+            return ("Understood - I've noted that. Would you like to talk about "
+                    "something else, or ask me to define or search for something?")
+        if not self.loaded:
+            # Without the neural model there is nothing more to add beyond
+            # the other sources, so stay conversational instead of pretending.
+            return ("I'm not sure how to respond to that. You could rephrase "
+                    "it, ask me directly - for example \"what is X?\" or "
+                    "\"search for X\" - or give me a word to look up.")
+        return str(np.random.choice(self.knowledge_base['fallback']))
+
+    def _maybe_blend_neural(self, response: str, analysis: Analysis) -> str:
+        """Blend neural generation into the response when it adds information."""
+        # Don't pollute clean web-search answers with toy-model text
+        if response.startswith('🌐'):
+            return response
+        try:
+            neural = self._generate_with_model(
+                analysis.resolved_text or analysis.cleaned, max_tokens=60)
+            if neural and len(neural) > 20:
+                low = neural.lower()
+                # Reject the model parroting the chat format back at us
+                if any(m in low for m in ('user:', 'ai:', 'question:', 'answer:')):
+                    return response
+                # Reject word salad - invented words, fragments, list
+                # soup. Same judge the release gate in CI uses.
+                readable, _why = looks_like_english(neural, self.dictionary)
+                if not readable:
+                    return response
+                alpha = re.findall(r'[a-z]+', low)
+                # Require real topical overlap with what was asked
+                focus = {w for c in analysis.clauses for w in c.focus}
+                neural_words = set(alpha)
+                if not focus or not (focus & neural_words):
+                    return response
+                return self._blend_responses(response, neural, analysis.cleaned)
+        except Exception:
+            pass
+        return response
+
+    def _generate_with_model(self, prompt: str, max_tokens: int = 80) -> str:
+        """Generate an assistant reply with the GGUF model (ChatML)."""
+        if not self.loaded or self.model is None:
+            return ""
+
+        try:
+            messages = []
+            # A little conversation context for the model
+            for msg in self.conversation_history[-3:-1]:
+                messages.append({'role': msg['role'], 'content': msg['content']})
+            messages.append({'role': 'user', 'content': prompt})
+            # Low temperature on purpose. Measured on the shipped model
+            # with tools/chat_eval.py (4 seeds): 0.2-0.5 scores 74-75%,
+            # 0.7 scores 71%, 0.9 scores 64%. A small model has little
+            # probability mass to spare for creative sampling.
+            generated_text = self.model.chat(
+                messages, max_new_tokens=max_tokens,
+                temperature=0.3, top_p=0.9, repeat_penalty=1.1)
+            return generated_text.strip()
+        except Exception:
+            return ""
 
     def _blend_responses(self, kb_response: str, neural_response: str, query: str) -> str:
         """Intelligently blend knowledge-based and neural responses."""
-        # Use KB response as the main one, neural as supplement
-        # Check if neural response adds new information
         kb_words = set(kb_response.lower().split())
         neural_words = set(neural_response.lower().split())
         new_words = neural_words - kb_words
 
         if len(new_words) > 5 and len(neural_response) > 30:
-            # Neural response has new information
-            # Clean neural response
             neural_clean = neural_response.split('.')[0] + '.'
             if len(neural_clean) > 20:
+                if neural_clean[0].isalpha():
+                    neural_clean = neural_clean[0].upper() + neural_clean[1:]
                 return f"{kb_response} {neural_clean}"
 
         return kb_response
 
+    _ABBR_PERIODS = ('e.g', 'i.e', 'etc', 'vs', 'Mr', 'Mrs', 'Ms', 'Dr', 'Prof',
+                     'approx', 'Inc', 'Ltd', 'Jr', 'Sr')
+
     def _post_process(self, response: str) -> str:
         """Clean up and improve response quality."""
-        # Remove excessive whitespace
         response = ' '.join(response.split())
 
-        # Ensure proper ending
-        if response and response[-1] not in '.!?':
-            # Find last complete sentence
-            last_period = response.rfind('.')
-            last_question = response.rfind('?')
-            last_excl = response.rfind('!')
-            last_end = max(last_period, last_question, last_excl)
-            if last_end > len(response) * 0.3:  # If we have at least 30% of text
-                response = response[:last_end + 1]
+        # Ensure proper ending. Trim an incomplete trailing sentence (e.g.
+        # from neural generation), but only when the leftover tail is long
+        # enough to be a real incomplete sentence, and only at real
+        # sentence-final punctuation (not the periods inside 'e.g.').
+        if response and response[-1] not in '.!?\'")':
+            cut = -1
+            for i in range(len(response) - 1, 0, -1):
+                if response[i] in '.!?':
+                    prev3 = response[max(0, i - 3):i]
+                    if any(prev3.endswith(a) for a in self._ABBR_PERIODS):
+                        continue
+                    if i == len(response) - 1 or response[i + 1] == ' ':
+                        cut = i
+                        break
+            tail_len = len(response) - cut - 1 if cut > 0 else len(response)
+            if cut > len(response) * 0.3 and tail_len > 40:
+                response = response[:cut + 1].rstrip()
             else:
                 response += '.'
 
-        # Capitalize first letter
-        if response:
+        # Capitalize first letter (leave emoji-prefixed answers alone)
+        if response and response[0].isalpha():
             response = response[0].upper() + response[1:]
 
         return response
 
+    # ------------------------------------------------------------------
+    # Utilities
+    # ------------------------------------------------------------------
+
     def reset_conversation(self):
         """Reset conversation history."""
         self.conversation_history = []
+        self.last_topic = ''
         print("Conversation history cleared.")
+
+    def set_search_enabled(self, enabled: bool) -> None:
+        self.search.enabled = enabled
+
+    @property
+    def search_enabled(self) -> bool:
+        return self.search.enabled

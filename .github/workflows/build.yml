@@ -1,4 +1,4 @@
-name: Build SmartAI
+name: Build Lito
 
 on:
   push:
@@ -27,24 +27,83 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install numpy
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Run training from scratch
+      - name: Run feature tests (dictionary, NLP, search parsing)
+        run: python tests/test_features.py
+
+      - name: Run GGUF pipeline tests (BPE, GGUF, numpy engine, exporter)
+        run: python tests/test_gguf_pipeline.py
+
+      # The model committed to the repo is what a fresh clone talks to,
+      # so it is gated like any other source file: it must know what it
+      # is and answer the first six things a person types.
+      - name: Self-check the committed model (tools/doctor.py)
+        run: python tools/doctor.py -m lito-chat.gguf
+
+      # The corpus is immutable (pinned blob SHAs), so it is cached
+      # across builds; the tokenizer and token stream are cached on the
+      # exact hash of the code that produces them, so any data change
+      # rebuilds them.
+      - name: Cache training corpus
+        uses: actions/cache@v4
+        with:
+          path: data/bigcorpus
+          key: bigcorpus-v2-${{ hashFiles('train_big.py') }}
+          restore-keys: bigcorpus-v2-
+
+      - name: Cache tokenizer and token stream
+        uses: actions/cache@v4
+        with:
+          path: |
+            checkpoints-big/bpe_tokenizer.json
+            checkpoints-big/tokens.bin
+            checkpoints-big/tokens_val.bin
+            checkpoints-big/tokens_core.bin
+          key: tokens-v2-${{ hashFiles('train_big.py', 'chatdata.py', 'src/bpe.py') }}
+
+      # Time-budgeted training: the cosine schedule follows whichever is
+      # further along, steps or wall clock, so the run always finishes
+      # fully annealed no matter how fast the runner is.
+      - name: Train the GGUF chat model from scratch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python train.py --epochs 15 --batch_size 4 --seq_len 32 --d_model 64 --n_layers 2 --n_heads 2 --d_ff 256 --save_dir checkpoints
+          python train_big.py --steps 4000 --max_minutes 90 \
+            --d_model 256 --n_layers 6 \
+            --n_heads 8 --n_ff 672 --ctx 512 --batch 12 --vocab_size 4096 \
+            --optimizer muon --muon_lr 0.04 --model_dir checkpoints-big
 
-      - name: Package model files
+      - name: Export to GGUF
+        run: python export_gguf.py
+
+      - name: Verify the GGUF with the numpy engine (loads + chats)
         run: |
-          cd checkpoints
-          zip -r ../model.zip best_model.npz tokenizer.json
-          cd ..
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, '.')
+          from src.llama_np import LlamaEngine
+          engine = LlamaEngine('lito-chat.gguf')
+          print(f'GGUF loads: {engine.name}, {engine._param_count:,} params, '
+                f'vocab {engine.vocab_size}')
+          reply = engine.chat([{'role': 'user', 'content': 'hello'}],
+                              max_new_tokens=16, temperature=0.0)
+          print('chat smoke test reply:', repr(reply))
+          assert engine._param_count > 1_000_000
+          EOF
 
-      - name: Test chat inference
+      # The gate that stops a release where "hello" comes back as word
+      # salad: real prompts, graded answers.
+      - name: Chat quality gate (greetings, identity, facts, stories)
+        run: python tools/chat_eval.py --temperature 0.0 --min-score 0.7 -v
+
+      - name: Test chat inference through the brain
         run: |
           python -c "
           from src.brain import AIBrain
-          brain = AIBrain(model_dir='checkpoints')
+          brain = AIBrain(model_path='lito-chat.gguf')
           brain.initialize()
-          assert brain.loaded, 'Model failed to load!'
+          assert brain.loaded, 'GGUF model failed to load!'
           response = brain.think('What is machine learning?')
           print(f'AI Response: {response}')
           "
@@ -53,7 +112,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trained-model
-          path: model.zip
+          path: lito-chat.gguf
           retention-days: 30
 
       - name: Update latest-model release (On Main/Master)
@@ -61,29 +120,41 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: latest-model
-          name: "SmartAI Latest Model"
-          body: "Automated build of the latest trained weights and tokenizer."
-          files: model.zip
+          name: "Lito Latest Model"
+          body: "Automated build of the latest from-scratch GGUF chat model (lito-chat.gguf)."
+          files: lito-chat.gguf
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-executables:
+  # One runner per platform builds everything users download: the Go
+  # desktop app (the UI), the frozen LitoEngine (Python + numpy + data +
+  # the GGUF model included, so nothing needs to be installed) and two
+  # zips - the full LitoDesktop bundle and the engine-only zip the app's
+  # in-app setup auto-downloads.
+  build-apps:
+    name: Build apps (${{ matrix.platform }})
     needs: train-and-package
     strategy:
+      fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
         include:
           - os: windows-latest
-            artifact_name: SmartAI-Windows
-            binary_name: SmartAI.exe
+            platform: Windows
+            exe: .exe
+            desktop_artifact: desktop-Windows
+            go_ldflags: "-s -w -H=windowsgui"
           - os: ubuntu-latest
-            artifact_name: SmartAI-Linux
-            binary_name: SmartAI
+            platform: Linux
+            exe: ""
+            desktop_artifact: desktop-Linux
+            go_ldflags: "-s -w"
           - os: macos-latest
-            artifact_name: SmartAI-macOS
-            binary_name: SmartAI
+            platform: macOS-apple
+            exe: ""
+            desktop_artifact: desktop-macOS-apple
+            go_ldflags: "-s -w"
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -104,21 +175,96 @@ jobs:
         with:
           name: trained-model
 
-      - name: Extract model
+      - name: Check the GGUF model is present
+        shell: bash
         run: |
-          python -c "
-          import zipfile, os
-          os.makedirs('checkpoints', exist_ok=True)
-          with zipfile.ZipFile('model.zip', 'r') as z:
-              z.extractall('checkpoints')
-          "
+          ls -la lito-chat.gguf
+          test -s lito-chat.gguf || { echo "::error::lito-chat.gguf missing"; exit 1; }
 
-      - name: Build executable with PyInstaller
+      - name: Build the frozen AI engine with PyInstaller
         run: python build.py
 
-      - name: Upload Executable Artifact
+      - name: Check the engine build
+        shell: bash
+        run: |
+          ls -la dist
+          test -f "dist/LitoEngine/LitoEngine${{ matrix.exe }}" \
+            || { echo "::error::missing frozen engine dist/LitoEngine/LitoEngine${{ matrix.exe }}"; exit 1; }
+          test -f "dist/LitoEngine/_internal/lito-chat.gguf" \
+            || { echo "::error::missing bundled model dist/LitoEngine/_internal/lito-chat.gguf"; exit 1; }
+
+      # Engine-only zip: what the desktop app's in-app setup downloads
+      # when it finds no engine next to itself (LitoEngine-<platform>.zip
+      # on the latest GitHub release). Must run BEFORE the Go app build
+      # adds its binary to dist/.
+      - name: Package the engine-only zip
+        shell: bash
+        run: |
+          python -c "import shutil; shutil.make_archive('dist/LitoEngine-${{ matrix.platform }}', 'zip', 'dist')"
+          ls -la dist
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Vet and build the desktop app
+        shell: bash
+        run: |
+          cd desktop
+          go vet ./...
+          mkdir -p ../dist
+          go build -trimpath -ldflags "${{ matrix.go_ldflags }}" -o "../dist/LitoDesktop-${{ matrix.platform }}${{ matrix.exe }}" .
+
+      - name: Assemble the LitoDesktop bundle
+        shell: bash
+        run: |
+          cat > dist/README-DESKTOP.txt <<'EOF'
+          Lito - desktop app
+          ==================
+          The GUI is the Go app; the thinking happens in LitoEngine, a
+          self-contained AI engine (Python + numpy + the from-scratch
+          GGUF chat model are all included). Nothing to install - just
+          run it.
+
+          Run it:
+            Windows: double-click LitoDesktop-Windows.exe - a browser
+                     window opens. The app has no console; if anything
+                     goes wrong see lito-desktop.log next to the exe.
+            Linux:   ./LitoDesktop-Linux
+            macOS:   ./LitoDesktop-macOS-* (unsigned: right-click -> Open,
+                     or: xattr -d com.apple.quarantine LitoDesktop-macOS-*)
+
+          The desktop app starts LitoEngine automatically and restarts it
+          if it crashes. If the banner says the engine is missing, keep
+          LitoDesktop and LitoEngine in the same folder.
+
+          Without the Go app the same UI runs from the engine alone:
+            LitoEngine/LitoEngine            # http://127.0.0.1:5486
+          Models: the bundled lito-chat.gguf (a from-scratch llama-
+          architecture model) chats offline; the Download button lists
+          every released model. The same GGUF file also works in
+          llama.cpp, LM Studio or Ollama.
+          EOF
+          rm -rf bundle/Lito && mkdir -p bundle/Lito
+          cp "dist/LitoDesktop-${{ matrix.platform }}${{ matrix.exe }}" bundle/Lito/
+          cp -r dist/LitoEngine bundle/Lito/
+          cp dist/README-DESKTOP.txt bundle/Lito/
+          python -c "import shutil; shutil.make_archive('dist/LitoDesktop-${{ matrix.platform }}', 'zip', 'bundle')"
+          ls -la dist
+
+      - name: Upload desktop bundle
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.binary_name }}
+          name: ${{ matrix.desktop_artifact }}
+          path: dist/LitoDesktop-${{ matrix.platform }}.zip
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload engine-only zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ matrix.platform }}
+          path: dist/LitoEngine-${{ matrix.platform }}.zip
+          if-no-files-found: error
           retention-days: 90

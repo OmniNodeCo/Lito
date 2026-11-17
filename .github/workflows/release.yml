@@ -1,0 +1,317 @@
+name: Release Lito
+
+# Publishes the artifacts of a green "Build Lito" run as a versioned
+# GitHub Release. Nothing is rebuilt here:
+#
+#   1. Find the green 'Build Lito' run of the commit being released.
+#      If a build of that commit is still running (e.g. the one triggered
+#      by this very tag push), wait for it to finish.
+#   2. Download that run's artifacts: lito-chat.gguf (the from-scratch
+#      chat model trained by CI, from the 'trained-model' artifact), the
+#      engine-only zips (what the app's in-app setup auto-downloads) and
+#      the self-contained Go desktop app bundles (each zip = the Go GUI
+#      binary + the frozen LitoEngine, with Python + numpy + the GGUF
+#      model inside).
+#   3. Publish everything as a GitHub Release, tagged with the app version
+#      of the commit that was built (e.g. v1.2.0).
+#
+# Triggers:
+#   - Manually: Actions -> Release Lito -> Run workflow (publishes the
+#     build of the branch head commit; build it first if there is none)
+#   - Pushing a v* tag: publishes under that tag, waiting for the
+#     tag-triggered build to complete
+#
+# Build artifacts are only kept for 30-90 days; if the green run is
+# older than that, this workflow fails and asks you to re-run the build
+# first.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (empty = app version of the built commit, e.g. v1.2.0)'
+        required: false
+        default: ''
+      prerelease:
+        description: 'Publish as a pre-release'
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write   # create the release and its tag
+  actions: read     # list workflow runs and download their artifacts
+
+concurrency:
+  group: release-lito
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish latest green build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find the green Build Lito run for this commit
+        id: find-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Looking for a green 'Build Lito' run of commit $TARGET_SHA..."
+
+          fetch_runs() {
+            gh run list --repo "$REPO" --workflow build.yml --limit 100 \
+              --json databaseId,headSha,number,createdAt,url,conclusion,status \
+              | jq --arg sha "$TARGET_SHA" '[.[] | select(.headSha == $sha)]'
+          }
+          pick_success() {
+            jq 'map(select(.status == "completed" and .conclusion == "success"))
+                | sort_by(.createdAt) | reverse | .[0] // empty'
+          }
+
+          # A just-pushed tag can take a moment to register its build run.
+          MATCHED=""
+          for _ in $(seq 1 10); do
+            MATCHED="$(fetch_runs)"
+            if [ "$(jq length <<<"$MATCHED")" -gt 0 ]; then break; fi
+            echo "  (no Build run for this commit yet - retrying in 30s)"
+            sleep 30
+          done
+          if [ "$(jq length <<<"$MATCHED")" -eq 0 ]; then
+            echo "::error::No 'Build Lito' run exists for commit $TARGET_SHA. Trigger 'Build Lito' on that commit first (Actions -> Build Lito -> Run workflow), then run this release workflow again."
+            exit 1
+          fi
+
+          GREEN="$(pick_success <<<"$MATCHED")"
+
+          # If there is no green run yet, wait for an in-progress build of
+          # the same commit (e.g. the one triggered by this very tag push).
+          if [ -z "$GREEN" ]; then
+            echo "  No green run of this commit yet - waiting for the running build..."
+            for _ in $(seq 1 240); do   # up to 2 hours (CI trains the model)
+              sleep 30
+              MATCHED="$(fetch_runs)"
+              GREEN="$(pick_success <<<"$MATCHED")"
+              if [ -n "$GREEN" ]; then break; fi
+              if ! jq -e 'map(select(.status != "completed")) | length > 0' <<<"$MATCHED" >/dev/null; then
+                echo "::error::The 'Build Lito' run(s) of commit $TARGET_SHA finished without a success."
+                exit 1
+              fi
+              echo "  still building... ($(date -u +%H:%M:%S) UTC)"
+            done
+          fi
+
+          if [ -z "$GREEN" ]; then
+            echo "::error::Timed out waiting for a green 'Build Lito' run of commit $TARGET_SHA."
+            exit 1
+          fi
+
+          RUN_ID="$(jq '.databaseId' <<<"$GREEN")"
+          HEAD_SHA="$(jq -r '.headSha' <<<"$GREEN")"
+          RUN_NUMBER="$(jq '.number' <<<"$GREEN")"
+          CREATED_AT="$(jq -r '.createdAt' <<<"$GREEN")"
+          RUN_URL="$(jq -r '.url' <<<"$GREEN")"
+          MSG="$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '.commit.message')"
+          COMMIT_SUBJECT="$(head -n1 <<<"$MSG")"
+
+          echo "Found green run #$RUN_NUMBER (commit $HEAD_SHA): $COMMIT_SUBJECT"
+          {
+            echo "run-id=$RUN_ID"
+            echo "head-sha=$HEAD_SHA"
+            echo "short-sha=${HEAD_SHA:0:7}"
+            echo "run-number=$RUN_NUMBER"
+            echo "run-url=$RUN_URL"
+            echo "created-at=$CREATED_AT"
+            echo "commit-subject=$COMMIT_SUBJECT"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Check out the commit that was built
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.find-run.outputs.head-sha }}
+
+      - name: Work out the release tag
+        id: version
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [ -n "$TAG_INPUT" ]; then
+            TAG="$TAG_INPUT"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            TAG="$REF_NAME"   # a v* tag was pushed: publish under it
+          else
+            # Default: app version of the commit the artifacts came from
+            VERSION=""
+            if [ -f src/version.py ]; then
+              VERSION="$(grep -oP "__version__\s*=\s*['\"]\K[^'\"]+" src/version.py | head -n1)"
+            fi
+            if [ -z "$VERSION" ] && [ -f setup.py ]; then
+              VERSION="$(grep -oP "^\s*version\s*=\s*['\"]\K[^'\"]+" setup.py | head -n1)"
+            fi
+            TAG="v${VERSION:-0.0.0}"
+          fi
+
+          echo "tag=$TAG" >>"$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >>"$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: Check the green run still has its artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.find-run.outputs.run-id }}
+          RUN_NUMBER: ${{ steps.find-run.outputs.run-number }}
+        shell: bash
+        run: |
+          ARTIFACTS="$(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --jq '.artifacts')"
+
+          echo "Artifacts on green run #$RUN_NUMBER:"
+          jq -r '.[] | "  - \(.name) (\(.size_in_bytes) bytes, expired: \(.expired))"' <<<"$ARTIFACTS"
+
+          EXPIRED="$(jq -r '[.[] | select(.expired == true) | .name] | join(", ")' <<<"$ARTIFACTS")"
+          LISTED="$(jq -r '.[].name' <<<"$ARTIFACTS")"
+
+          MISSING=""
+          for EXPECTED in trained-model engine-Windows engine-Linux engine-macOS-apple desktop-Windows desktop-Linux desktop-macOS-apple; do
+            if ! grep -qx "$EXPECTED" <<<"$LISTED"; then
+              MISSING="$MISSING $EXPECTED"
+            fi
+          done
+
+          if [ -n "$EXPIRED" ] || [ -n "$MISSING" ]; then
+            echo "::error::Green run #$RUN_NUMBER no longer has all the release artifacts (build artifacts are only kept 30-90 days)."
+            if [ -n "$EXPIRED" ]; then
+              echo "  Expired: $EXPIRED"
+            fi
+            if [ -n "$MISSING" ]; then
+              echo "  Missing:$MISSING"
+            fi
+            echo "  Re-run the 'Build Lito' workflow on that branch, then run this release workflow again."
+            exit 1
+          fi
+
+      - name: Download the GGUF model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-model
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/model
+
+      - name: Download engine-only zips
+        uses: actions/download-artifact@v4
+        with:
+          pattern: engine-*
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/engine
+          merge-multiple: true
+
+      - name: Download desktop bundles (Windows, Linux, macOS)
+        uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          run-id: ${{ steps.find-run.outputs.run-id }}
+          github-token: ${{ github.token }}
+          path: downloaded/desktop
+          merge-multiple: true
+
+      - name: Collect and verify the release files
+        shell: bash
+        run: |
+          mkdir -p release
+
+          # The from-scratch chat model trained by the CI build
+          cp downloaded/model/lito-chat.gguf release/
+
+          # Engine-only zips: what the app's in-app setup downloads when
+          # it finds no engine next to itself.
+          cp downloaded/engine/LitoEngine-*.zip release/
+
+          # Go desktop app bundles: each zip = the Go GUI binary + the
+          # frozen LitoEngine (Python + numpy + data + the GGUF model
+          # included), so the download runs with nothing installed.
+          cp downloaded/desktop/LitoDesktop-*.zip release/
+
+          # Every expected file must exist and not be empty
+          for FILE in lito-chat.gguf LitoEngine-Windows.zip LitoEngine-Linux.zip LitoEngine-macOS-apple.zip LitoDesktop-Windows.zip LitoDesktop-Linux.zip LitoDesktop-macOS-apple.zip; do
+            if [ ! -s "release/$FILE" ]; then
+              echo "::error::Release file '$FILE' is missing or empty after downloading the artifacts."
+              exit 1
+            fi
+          done
+
+          # Sanity check: a GGUF v3 file starts with the 'GGUF' magic
+          python3 - <<'PYEOF'
+          import struct
+          with open('release/lito-chat.gguf', 'rb') as f:
+              magic, version, n_tensors, n_kv = struct.unpack('<IIQQ', f.read(24))
+          assert magic == 0x46554747, 'bad GGUF magic'
+          assert version == 3, f'GGUF v{version}'
+          print(f'lito-chat.gguf: v{version}, {n_tensors} tensors, {n_kv} metadata keys')
+          PYEOF
+
+          # Checksums so downloads can be verified
+          (cd release && sha256sum * > SHA256SUMS.txt)
+
+          echo "Release contents:"
+          ls -la release/
+
+      - name: Write the release notes
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.find-run.outputs.short-sha }}
+          COMMIT_SUBJECT: ${{ steps.find-run.outputs.commit-subject }}
+          RUN_NUMBER: ${{ steps.find-run.outputs.run-number }}
+          RUN_URL: ${{ steps.find-run.outputs.run-url }}
+          CREATED_AT: ${{ steps.find-run.outputs.created-at }}
+        shell: bash
+        run: |
+          {
+            echo "Artifacts from the latest green **Build Lito** run."
+            echo
+            echo "- **Built from:** \`$SHORT_SHA\` — $COMMIT_SUBJECT"
+            echo "- **Build run:** [#$RUN_NUMBER]($RUN_URL)"
+            echo "- **Build finished:** $CREATED_AT"
+            echo "- **App version:** v$VERSION"
+            echo
+            echo "### Files"
+            echo
+            echo "| File | Description |"
+            echo "|------|-------------|"
+            echo "| \`lito-chat.gguf\` | **The from-scratch chat model** - a llama-architecture transformer trained by CI from random initialization (no pretrained weights), one offline file that also runs in llama.cpp, LM Studio or Ollama |"
+            echo "| \`LitoEngine-Windows.zip\` | The frozen AI engine alone (Windows) - what the desktop app auto-downloads during setup |"
+            echo "| \`LitoEngine-Linux.zip\` | The frozen AI engine alone (Linux) |"
+            echo "| \`LitoEngine-macOS-apple.zip\` | The frozen AI engine alone (macOS, Apple silicon) |"
+            echo "| \`LitoDesktop-Windows.zip\` | **Desktop app for Windows** - the Go GUI plus the frozen LitoEngine AI engine (Python + numpy + the GGUF model are included), ready to unzip and run - nothing to install |"
+            echo "| \`LitoDesktop-Linux.zip\` | Desktop app for Linux (same self-contained bundle) |"
+            echo "| \`LitoDesktop-macOS-apple.zip\` | Desktop app for macOS, Apple silicon (same self-contained bundle) |"
+            echo "| \`SHA256SUMS.txt\` | Checksums for the files above |"
+            echo
+            echo "The \`LitoDesktop\` zips are fully self-contained: the desktop app is the Go GUI and the thinking happens in the bundled \`LitoEngine\` (a frozen AI engine with its own Python + numpy + the from-scratch GGUF chat model) which the app starts and watches automatically - unzip and double-click, nothing to install. Got just the GUI binary without an engine? The app offers to download and set it up on first run. To run from source instead, download \`lito-chat.gguf\` from this release (or train one: \`python train_big.py && python export_gguf.py\`), then run \`python server.py\`."
+          } > notes.md
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ steps.find-run.outputs.head-sha }}
+          name: Lito ${{ steps.version.outputs.tag }}
+          body_path: notes.md
+          files: |
+            release/*
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ inputs.prerelease == true }}
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

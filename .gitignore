@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# Model checkpoints (trained locally or downloaded from releases)
+checkpoints/
+
+# Downloaded models (from the version database / GitHub Releases)
+models/
+
+# Runtime caches (web search / online dictionary API responses)
+data/cache/
+
+# Learned dictionary (words the AI looks up online at runtime)
+data/learned_dictionary.json
+
+# Build artifacts
+build/
+dist/
+*.spec
+
+# Go desktop app runtime log (written next to the binary)
+lito-desktop.log
+
+# Extension enable/disable state (runtime, per user)
+data/extensions.json
+
+# From-scratch GGUF model training (train_big.py) - large local artifacts
+data/bigcorpus/
+checkpoints-big/
+checkpoints-pilot-data/
+pilot-*/
+
+# NOTE: lito-chat.gguf is deliberately NOT ignored. The trained model is
+# committed (13.7 MB, f16) so that cloning the repo gives you a working
+# assistant with no download step and no training run.
